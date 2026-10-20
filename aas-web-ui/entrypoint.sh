@@ -47,6 +47,7 @@
 : "${COMPANY_LOOKUP_DOMAIN:=}"
 : "${CX_EDC_BFF_ENABLED:=false}"
 : "${CX_EDC_BFF_PORT:=3001}"
+: "${DMP_STATUS_URL:=}"
 
 if [ "$CX_EDC_BFF_ENABLED" = "true" ] && [ -z "${CX_EDC_BFF_UPSTREAM_URL+x}" ]; then
     CX_EDC_BFF_UPSTREAM_URL="http://127.0.0.1:${CX_EDC_BFF_PORT}"
@@ -62,7 +63,8 @@ BASE_PATH_NGINX_PREFIX=$(echo "$BASE_PATH" | sed 's|/*$||')
 export BASE_PATH_NGINX_PREFIX
 export CX_EDC_BFF_UPSTREAM_URL
 export CX_EDC_BFF_PORT
-envsubst '${BASE_PATH_NGINX_PREFIX} ${CX_EDC_BFF_UPSTREAM_URL}' < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf
+export DMP_STATUS_URL
+envsubst '${BASE_PATH_NGINX_PREFIX} ${CX_EDC_BFF_UPSTREAM_URL} ${DMP_STATUS_URL}' < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf
 
 # Add a trailing slash to BASE_PATH for the replacement in files
 BASE_PATH_WITH_SLASH=$(echo "$BASE_PATH" | sed 's|/*$|/|')
@@ -197,6 +199,7 @@ printf "%-38s %s\n" "Start page route name:" "$START_PAGE_ROUTE_NAME"
 printf "%-38s %s\n" "Company Lookup Domain:" "$COMPANY_LOOKUP_DOMAIN"
 printf "%-38s %s\n" "Integrated Catena-X EDC BFF:" "$CX_EDC_BFF_ENABLED"
 printf "%-38s %s\n" "Catena-X EDC BFF upstream:" "$CX_EDC_BFF_UPSTREAM_URL"
+printf "%-38s %s\n" "DMP status upstream:" "${DMP_STATUS_URL:-(disabled)}"
 echo "-------------------------------------------------------------------------------------------------------------------------"
 
 # Finish discovery before sed -i replaces directory entries. On older Btrfs

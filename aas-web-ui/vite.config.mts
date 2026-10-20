@@ -123,6 +123,17 @@ export default defineConfig(({ mode }) => {
           target: process.env.CX_EDC_BFF_UPSTREAM_URL || 'http://localhost:3001',
           changeOrigin: true,
         },
+        // Mirrors the nginx location of the production image: the DMP status
+        // for the AIMC plugin, e.g. DMP_STATUS_URL=http://localhost:18085/management/status
+        ...(process.env.DMP_STATUS_URL
+          ? {
+              '/api/dmp/status': {
+                target: process.env.DMP_STATUS_URL,
+                changeOrigin: true,
+                ignorePath: true,
+              },
+            }
+          : {}),
       },
     },
   }
