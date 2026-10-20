@@ -182,9 +182,7 @@
 
   const kindLabels: Record<AimcMappingKind, string> = {
     'data': 'Data mapping',
-    'operation': 'Operation delegation',
-    'property-write': 'Property write delegation',
-    'unknown': 'Unclassified',
+    'delegated-action': 'Delegated action',
   }
 
   const editorOptions: editor.IStandaloneEditorConstructionOptions = {
@@ -227,6 +225,15 @@
     },
     { immediate: true },
   )
+
+  // The repository's script changed under the editor (the reload after a save,
+  // or another user's edit): follow it unless there are unsaved changes.
+  watch(transformationCode, code => {
+    if (!dirty.value) {
+      draft.value = code
+      savedValue.value = code
+    }
+  })
 
   /** Brought into view whenever the graph is asked to open a transformation. */
   async function reveal (): Promise<void> {

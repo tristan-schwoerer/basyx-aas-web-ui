@@ -1,5 +1,9 @@
 <template>
-  <div class="aimc-graph">
+  <div
+    class="aimc-graph"
+    :class="{ 'aimc-graph--pending': !laidOut }"
+    :style="{ height: `${graphHeight}px` }"
+  >
     <VueFlow
       v-model:edges="edges"
       v-model:nodes="nodes"
@@ -14,150 +18,32 @@
       @node-click="onNodeClick"
       @pane-click="onPaneClick"
     >
-      <!-- One group per originating SMC: all sources (or sinks) of a route
-           that live in the same interface / AAS submodel share a frame. -->
+      <!-- One frame per originating affordance: all sources (or sinks) of a
+           route that address the same AID affordance share it. -->
       <template #node-aimcGroup="{ data }">
         <div
           class="aimc-group"
-          :class="[
-            `aimc-group--${data.side}`,
-            { 'aimc-group--collapsed': data.members.length === 1 },
-          ]"
+          :class="{ 'aimc-group--collapsed': data.members === 1 }"
         >
           <div class="aimc-group__header">
             <v-icon density="compact" size="x-small">
               {{ data.side === 'source' ? 'mdi-import' : 'mdi-export' }}
             </v-icon>
 
-            <span class="text-caption font-weight-bold">{{ data.label }}</span>
-            <span class="text-caption opacity-70">{{ data.members.length }}</span>
+            <span class="aimc-group__label text-caption font-weight-bold" :title="data.label">{{ data.label }}</span>
+            <span class="text-caption opacity-70">{{ data.members }}</span>
           </div>
+
+          <div v-if="data.form" class="aimc-group__form">{{ data.form }}</div>
         </div>
       </template>
 
       <template #node-aimcSource="{ data }">
-        <div
-          class="aimc-node aimc-node--endpoint"
-          :class="[
-            `aimc-node--${data.deliveryKind}`,
-            { 'aimc-node--expanded': isExpanded(data) },
-          ]"
-        >
-          <!-- Both edges leave this side (the request goes right towards the
-               transformation, the reply arrives from the right), so the two
-               connection points are split vertically to stay distinguishable. -->
-          <Handle
-            id="forward"
-            class="aimc-handle aimc-handle--out"
-            :position="Position.Right"
-            :style="{ top: OUT_HANDLE_TOP }"
-            type="source"
-          />
-
-          <Handle
-            id="reply"
-            class="aimc-handle aimc-handle--in"
-            :position="Position.Right"
-            :style="{ top: IN_HANDLE_TOP }"
-            type="target"
-          />
-
-          <div class="aimc-node__header">
-            <v-icon density="compact" size="small">{{ endpointIcon(data) }}</v-icon>
-            <span class="text-body-2 font-weight-bold">{{ data.label }}</span>
-          </div>
-
-          <div class="aimc-node__meta">
-            <v-chip
-              v-for="badge in data.badges"
-              :key="badge.text"
-              :color="badge.color"
-              density="compact"
-              label
-              size="x-small"
-              variant="tonal"
-            >
-              {{ badge.text }}
-            </v-chip>
-          </div>
-
-          <div v-if="isExpanded(data)" class="aimc-node__detail">
-            <div class="aimc-node__detail-label">reference</div>
-
-            <ol class="aimc-node__keys">
-              <li
-                v-for="(key, index) in data.keys"
-                :key="index"
-                class="aimc-node__key"
-              >
-                <span class="aimc-node__key-type">{{ key.type || 'Key' }}</span>
-                <span class="aimc-node__key-value">{{ key.value }}</span>
-              </li>
-            </ol>
-          </div>
-        </div>
+        <AimcEndpointNode :data="data" :expanded="isExpanded(data)" />
       </template>
 
       <template #node-aimcSink="{ data }">
-        <div
-          class="aimc-node aimc-node--endpoint"
-          :class="[
-            `aimc-node--${data.deliveryKind}`,
-            { 'aimc-node--expanded': isExpanded(data) },
-          ]"
-        >
-          <!-- Mirror of the source: the request arrives from the left, the
-               reply departs to the left. -->
-          <Handle
-            id="forward"
-            class="aimc-handle aimc-handle--in"
-            :position="Position.Left"
-            :style="{ top: OUT_HANDLE_TOP }"
-            type="target"
-          />
-
-          <Handle
-            id="reply"
-            class="aimc-handle aimc-handle--out"
-            :position="Position.Left"
-            :style="{ top: IN_HANDLE_TOP }"
-            type="source"
-          />
-
-          <div class="aimc-node__header">
-            <v-icon density="compact" size="small">{{ endpointIcon(data) }}</v-icon>
-            <span class="text-body-2 font-weight-bold">{{ data.label }}</span>
-          </div>
-
-          <div class="aimc-node__meta">
-            <v-chip
-              v-for="badge in data.badges"
-              :key="badge.text"
-              :color="badge.color"
-              density="compact"
-              label
-              size="x-small"
-              variant="tonal"
-            >
-              {{ badge.text }}
-            </v-chip>
-          </div>
-
-          <div v-if="isExpanded(data)" class="aimc-node__detail">
-            <div class="aimc-node__detail-label">reference</div>
-
-            <ol class="aimc-node__keys">
-              <li
-                v-for="(key, index) in data.keys"
-                :key="index"
-                class="aimc-node__key"
-              >
-                <span class="aimc-node__key-type">{{ key.type || 'Key' }}</span>
-                <span class="aimc-node__key-value">{{ key.value }}</span>
-              </li>
-            </ol>
-          </div>
-        </div>
+        <AimcEndpointNode :data="data" :expanded="isExpanded(data)" />
       </template>
 
       <template #node-aimcTransform="{ data }">
@@ -168,30 +54,16 @@
             { 'aimc-node--selected': data.direction === direction, 'aimc-node--absent': data.absent },
           ]"
         >
-          <!-- The reply lane runs right-to-left, so its handles mirror the
-               request lane to keep the arrowheads along the flow direction. -->
+          <!-- One connection point per edge, placed level with the endpoint at
+               its other end (see placeHandles). The reply lane runs
+               right-to-left, so its points mirror the request lane's. -->
           <Handle
-            v-if="data.direction === 'request'"
-            :position="Position.Left"
-            type="target"
-          />
-
-          <Handle
-            v-if="data.direction === 'request'"
-            :position="Position.Right"
-            type="source"
-          />
-
-          <Handle
-            v-if="data.direction === 'response'"
-            :position="Position.Right"
-            type="target"
-          />
-
-          <Handle
-            v-if="data.direction === 'response'"
-            :position="Position.Left"
-            type="source"
+            v-for="handle in data.handles"
+            :id="handle.id"
+            :key="handle.id"
+            :position="handle.position"
+            :style="{ top: handle.top }"
+            :type="handle.type"
           />
 
           <div class="aimc-node__header">
@@ -215,11 +87,10 @@
             </v-chip>
           </div>
 
-          <div class="aimc-node__path">aimc_main(sources)</div>
+          <div class="aimc-node__path">{{ data.entrypoint }}</div>
 
           <v-btn
             class="aimc-node__open"
-            density="compact"
             prepend-icon="mdi-code-tags"
             size="x-small"
             variant="tonal"
@@ -230,6 +101,22 @@
         </div>
       </template>
 
+      <template #node-aimcResponseEndpoint="{ data }">
+        <div class="aimc-node aimc-node--response-endpoint">
+          <Handle
+            :position="data.side === 'source' ? Position.Left : Position.Right"
+            :type="data.side === 'source' ? 'source' : 'target'"
+          />
+
+          <div class="aimc-node__header">
+            <v-icon density="compact" size="small">{{ data.side === 'source' ? 'mdi-download' : 'mdi-upload' }}</v-icon>
+            <span class="text-body-2 font-weight-bold">{{ data.label }}</span>
+          </div>
+
+          <div class="aimc-node__path">{{ data.member || data.affordance || 'response endpoint' }}</div>
+        </div>
+      </template>
+
       <Background :gap="16" pattern-color="currentColor" />
       <Controls />
     </VueFlow>
@@ -237,30 +124,38 @@
 </template>
 
 <script lang="ts" setup>
-  import type {
-    AimcEndpointKind,
-    AimcMapping,
-    AimcReferenceKey,
-  } from '../types'
+  import type { AimcLayoutItem, AimcLayoutLane } from '../composables/layoutAimcGraph'
+  import type { AimcMapping } from '../types'
+  import type { AimcEndpointNodeData } from './AimcEndpointNode.vue'
   /**
    * Renders one AIMC route: sources on the left, the Lua transformation(s) in
    * the middle and sinks on the right.
    *
-   * Sources and sinks that originate in the same SMC (the same `interface_*`
-   * affordance group, or the same AAS submodel) share a labelled frame, so a
-   * route that fans out over several interfaces stays readable.
+   * Sources and sinks that address the same AID affordance share a labelled
+   * frame, so a route that fans out over several affordances stays readable.
    *
-   * For a bi-directional action contract (an operation delegation, or any
-   * route that authors a `ResponseTransformation`) a second, lower lane is
-   * drawn: the correlated reply flows from the sink back through the response
+   * For a bi-directional action contract (an operation mapping, or any route
+   * that authors a `ResponseTransformation`) a second, lower lane is drawn: the
+   * correlated reply flows from the sink back through the response
    * transformation to the source. All connections are dashed and animated in
    * the direction of the data transfer; the forward lane additionally labels
    * each source with its delivery mode (polled or pushed).
+   *
+   * Nodes are placed in two passes: first with estimated heights, then — once
+   * Vue Flow has measured them — with their rendered heights, so every column
+   * is centered on its lane's midline (see `layoutAimcGraph`).
    */
   import type { Edge, Node } from '@vue-flow/core'
   import { Background } from '@vue-flow/background'
   import { Controls } from '@vue-flow/controls'
   import { Handle, MarkerType, Position, useVueFlow, VueFlow } from '@vue-flow/core'
+  import {
+    AIMC_LANE_GAP,
+    handleShare,
+    layoutAimcGraph,
+  } from '../composables/layoutAimcGraph'
+  import AimcEndpointNode from './AimcEndpointNode.vue'
+  import '@vue-flow/controls/dist/style.css'
   import '@vue-flow/core/dist/style.css'
   import '@vue-flow/core/dist/theme-default.css'
 
@@ -274,28 +169,37 @@
     'select-direction': [direction: 'request' | 'response']
   }>()
 
-  // Geometry of a single route. Three columns; the reply lane sits below the
-  // request lane so the two directions never overlap.
+  // Column geometry. Nodes have a fixed width, so only the heights are measured.
   const SOURCE_X = 0
   const TRANSFORM_X = 400
   const SINK_X = 800
-  const ROW_HEIGHT = 92
   const NODE_WIDTH = 250
-  const NODE_HEIGHT = 66
-  const REPLY_LANE_OFFSET = 132
-  const GROUP_TAIL_PADDING = 40
-  // The group frame carries a label strip; the first endpoint must clear it.
-  const GROUP_HEADER_HEIGHT = 22
-  const GROUP_HEADER_GAP = 8
-  const GROUP_PAD_Y = GROUP_HEADER_HEIGHT + GROUP_HEADER_GAP
-  const GROUP_PAD_X = 46
-  // Connection points are placed as a share of the node height so they stay
-  // distinct whether or not the endpoint is expanded to show its reference.
-  const OUT_HANDLE_TOP = '30%'
-  const IN_HANDLE_TOP = '72%'
+  // Heights assumed until Vue Flow has measured the rendered nodes.
+  const ESTIMATED_HEIGHT: Record<string, number> = {
+    aimcSource: 72,
+    aimcSink: 72,
+    aimcTransform: 112,
+    aimcResponseEndpoint: 54,
+  }
+  // The group frame carries a label strip (and optionally the form href line);
+  // the first endpoint must clear it.
+  const GROUP_HEADER_HEIGHT = 30
+  const GROUP_FORM_HEIGHT = 16
+  const GROUP_PAD_X = 16
   // The group frames are decorative backdrops; endpoints stack above them.
   const GROUP_Z = 0
+  // Edges and nodes share one stacking context: edges are drawn above the
+  // frames (whose tint would otherwise cover them) and below the nodes.
+  const EDGE_Z = 1
   const INTERACTIVE_Z = 10
+  // Frames to wait for Vue Flow to measure the nodes before falling back to the estimates.
+  const MEASURE_FRAMES = 20
+  // The canvas grows with the route (a fan-in of ten sources needs more room
+  // than a 1:1 route), within these bounds; the vertical margin leaves room
+  // for the controls and the fit padding.
+  const MIN_GRAPH_HEIGHT = 280
+  const MAX_GRAPH_HEIGHT = 760
+  const GRAPH_MARGIN_Y = 140
 
   // Every connection is a dashed spline whose dashes march along the flow.
   const defaultEdgeOptions = {
@@ -306,77 +210,90 @@
   const nodes = ref<Node[]>([])
   const edges = ref<Edge[]>([])
   const expandedNodeId = ref('')
+  // Hides the first, estimated placement until the measured one is applied.
+  const laidOut = ref(false)
+  const graphHeight = ref(MIN_GRAPH_HEIGHT)
+  let layoutToken = 0
 
-  const { fitView } = useVueFlow()
+  const { fitView, findNode, updateNode, updateNodeInternals } = useVueFlow()
+
+  watch(
+    () => props.mapping,
+    async () => {
+      await applyRoute(props.mapping)
+    },
+    { immediate: true },
+  )
 
   function isExpanded (data: any): boolean {
     return Boolean(data?.nodeId) && data.nodeId === expandedNodeId.value
   }
 
-  function endpointIcon (data: any): string {
-    const icons: Record<AimcEndpointKind, string> = {
-      'affordance': data.role === 'source' ? 'mdi-broadcast' : 'mdi-access-point',
-      'operation': 'mdi-play-box-outline',
-      'aas-element': 'mdi-database-outline',
-      'unknown': 'mdi-help-circle-outline',
-    }
-    return icons[data.kind as AimcEndpointKind] ?? icons.unknown
-  }
-
   /**
    * Delivery mode of a source, as authored on the route.
    *
-   * The DMP has exactly two modes (see `classify_delivery` in
-   * `management_node/execution_policy.py`): a source is **polled** only when a
-   * positive `PollingInterval` is declared — that is the sole case in which the
-   * descriptor emits a `pollingIntervalMs` and the DMP runs a timer route.
-   * Everything else is **pushed**: event affordances, properties declared
-   * `observable`, and anything a push protocol (MQTT) delivers on a topic all
-   * arrive on their own. An explicitly declared interval overrides the
-   * transport default, so a retained MQTT topic can still be sampled.
+   * The DMP has exactly two modes: a source is **polled** only when a positive
+   * `PollingInterval` is declared (on the source, or as the route's
+   * `DefaultPollingInterval`) — the sole case in which the DMP runs a timer
+   * route. Everything else is **pushed**: event affordances, properties
+   * declared `observable`, and anything a push protocol (MQTT) delivers on a
+   * topic all arrive on their own. An explicitly declared interval overrides
+   * the transport default, so a retained MQTT topic can still be sampled.
    *
    * The affordance group (`properties` / `actions` / `events`) is transport
    * metadata shown as its own chip, not a third delivery mode.
    */
-  function deliveryOf (pollingInterval: number | undefined): { kind: string, text: string, color?: string } {
+  function sourceDelivery (
+    source: AimcMapping['sources'][number],
+    defaultPollingInterval?: number,
+  ): { kind: string, text: string, color?: string } {
+    if (source.resolved?.kind === 'operation') {
+      return { kind: 'operation', text: '' }
+    }
+    const pollingInterval = source.pollingInterval ?? defaultPollingInterval
     if (pollingInterval !== undefined && pollingInterval > 0) {
       return { kind: 'polling', text: `poll ${pollingInterval}s`, color: 'info' }
     }
     return { kind: 'pushed', text: 'pushed', color: 'success' }
   }
 
-  function sourceDelivery (
-    source: AimcMapping['sources'][number],
-    defaultPollingInterval?: number,
-  ): { kind: string, text: string, color?: string } {
-    return deliveryOf(source.pollingInterval ?? defaultPollingInterval)
+  function endpointBadges (endpoint: AimcMapping['sources'][number] | AimcMapping['sinks'][number]): Array<{ text: string, color?: string }> {
+    const badges: Array<{ text: string, color?: string }> = []
+    if (endpoint.protocol) {
+      badges.push({ text: endpoint.protocol.toUpperCase() })
+    }
+    if (endpoint.group) {
+      badges.push({ text: endpoint.group })
+    }
+    if (endpoint.kind === 'aas-element') {
+      badges.push({ text: 'AAS' })
+    } else if (endpoint.kind === 'operation') {
+      badges.push({ text: 'operation' })
+    }
+    return badges
   }
 
-  function sourceBadges (source: AimcMapping['sources'][number], defaultPollingInterval?: number): Array<{ text: string, color?: string }> {
-    const badges: Array<{ text: string, color?: string }> = []
-    if (source.protocol) {
-      badges.push({ text: source.protocol.toUpperCase() })
+  function sourceBadges (mapping: AimcMapping, source: AimcMapping['sources'][number]): Array<{ text: string, color?: string }> {
+    const badges = endpointBadges(source)
+    const delivery = sourceDelivery(source, mapping.defaultPollingInterval)
+    if (delivery.text) {
+      badges.push({ text: delivery.text, color: delivery.color })
     }
-    if (source.group) {
-      badges.push({ text: source.group })
+    // Only meaningful when the route narrows its triggers.
+    if (mapping.triggerSourceIds.length > 0) {
+      badges.push(source.triggers ? { text: 'trigger', color: 'primary' } : { text: 'no trigger' })
     }
-    if (source.kind === 'aas-element') {
-      badges.push({ text: 'AAS' })
+    if (source.kind === 'unknown') {
+      badges.push({ text: 'unresolved', color: 'warning' })
     }
-    const delivery = sourceDelivery(source, defaultPollingInterval)
-    badges.push({ text: delivery.text, color: delivery.color })
     return badges
   }
 
   function sinkBadges (sink: AimcMapping['sinks'][number]): Array<{ text: string, color?: string }> {
-    const badges: Array<{ text: string, color?: string }> = []
-    if (sink.protocol) {
-      badges.push({ text: sink.protocol.toUpperCase() })
+    const badges = endpointBadges(sink)
+    if (sink.kind === 'unknown') {
+      badges.push({ text: 'unresolved', color: 'warning' })
     }
-    if (sink.group) {
-      badges.push({ text: sink.group })
-    }
-    badges.push({ text: sink.kind === 'aas-element' ? 'AAS' : sink.kind })
     return badges
   }
 
@@ -384,211 +301,429 @@
     return code === '' ? 0 : code.split('\n').length
   }
 
-  /** Human readable name of the SMC an endpoint lives in, e.g. `interface_mqtt`. */
-  function originLabel (protocol: string, submodelId: string, side: 'source' | 'sink'): string {
-    if (protocol) {
-      return `interface_${protocol}`
-    }
-    const tail = submodelId.split('/submodels/').at(-1) ?? ''
-    if (tail !== '') {
-      return tail
-    }
-    return side === 'source' ? 'AAS source' : 'AAS sink'
-  }
-
   interface EndpointGroup {
     key: string
     label: string
     side: 'source' | 'sink'
-    rows: number[]
+    members: number
+    form?: string
   }
 
-  function groupEndpoints (
-    endpoints: Array<{ protocol: string, submodelId: string }>,
+  /** The frame an endpoint belongs to: the AID affordance it addresses. */
+  function endpointGroup (
+    endpoint: AimcMapping['sources'][number] | AimcMapping['sinks'][number],
     side: 'source' | 'sink',
-  ): EndpointGroup[] {
-    const groups = new Map<string, EndpointGroup>()
-    for (const [index, endpoint] of endpoints.entries()) {
-      const key = `${endpoint.submodelId}::${endpoint.protocol}`
-      const existing = groups.get(key)
-      if (existing) {
-        existing.rows.push(index)
-      } else {
-        groups.set(key, {
-          key,
-          label: originLabel(endpoint.protocol, endpoint.submodelId, side),
-          side,
-          rows: [index],
-        })
-      }
+  ): Omit<EndpointGroup, 'members'> | undefined {
+    const resolved = endpoint.resolved
+    if (!resolved?.affordanceId || !resolved.affordancePath) {
+      return undefined
     }
-    return [...groups.values()]
+    const direction = resolved.direction ? ` · ${resolved.direction}` : ''
+    // The interface is on every member as its protocol chip; the frame names
+    // the affordance, which would otherwise be what gets cut off.
+    return {
+      key: `${side}::${resolved.affordanceId}`,
+      label: `${resolved.affordancePath}${direction}`,
+      side,
+      form: resolved.form,
+    }
   }
 
-  function buildGraph (mapping: AimcMapping): { nodes: Node[], edges: Edge[] } {
+  /** A connection point of a transformation node, owned by one edge. */
+  interface TransformHandle {
+    id: string
+    type: 'source' | 'target'
+    position: Position
+    /** CSS `top`; set once the nodes are placed. */
+    top: string
+    /** The endpoint at the edge's other end, and its handle there. */
+    peer: string
+    peerHandle?: string | null
+  }
+
+  interface RouteGraph {
+    nodes: Node[]
+    edges: Edge[]
+    lanes: AimcLayoutLane[]
+    /** Endpoint groups by their layout key. */
+    groups: Map<string, EndpointGroup>
+    /** The connected points of each source and sink, top to bottom. */
+    endpointHandles: Map<string, Array<'forward' | 'reply'>>
+  }
+
+  function buildGraph (mapping: AimcMapping): RouteGraph {
     const nextNodes: Node[] = []
     const nextEdges: Edge[] = []
-    const rowCount = Math.max(mapping.sources.length, mapping.sinks.length, 2)
+    const groups = new Map<string, EndpointGroup>()
     // Every node/edge id is scoped to the route. Vue Flow keys its node and edge
     // registries by id, so ids shared between routes (a plain "source-0") make
     // it re-bind an edge to the previous route's handle element, which leaves
     // the path only partially drawn after a prev/next switch.
     const requestNodeId = `${mapping.id}-request`
     const responseNodeId = `${mapping.id}-response`
-    const hasResponseNode = mapping.bidirectional
-    const requestY = (rowCount * ROW_HEIGHT) / 2 - NODE_HEIGHT / 2
-    const responseY = hasResponseNode ? requestY + REPLY_LANE_OFFSET : 0
+    const hasExplicitReply = mapping.responseSources.length > 0 || mapping.responseSinks.length > 0
+    const isOperation = mapping.kind === 'delegated-action'
+    const operationIndex = mapping.sources.findIndex(source => source.resolved?.kind === 'operation')
+    // An operation always answers its caller. Without a ResponseTransformation
+    // the reply passes through unchanged; it is still drawn through its own
+    // (passthrough) node, so it keeps to the reply lane instead of cutting
+    // under the request transformation.
+    const hasResponseNode = mapping.response.present || hasExplicitReply || (isOperation && operationIndex !== -1)
 
-    for (const group of [...groupEndpoints(mapping.sources, 'source'), ...groupEndpoints(mapping.sinks, 'sink')]) {
-      const isSourceSide = group.side === 'source'
-      const firstRow = Math.min(...group.rows)
-      const lastRow = Math.max(...group.rows)
-      nextNodes.push({
-        id: `${mapping.id}-group-${group.side}-${group.key}`,
-        type: 'aimcGroup',
-        position: {
-          x: (isSourceSide ? SOURCE_X : SINK_X) - GROUP_PAD_X,
-          y: firstRow * ROW_HEIGHT - GROUP_PAD_Y,
-        },
-        draggable: false,
-        selectable: false,
-        connectable: false,
-        zIndex: GROUP_Z,
-        style: {
-          width: `${NODE_WIDTH + GROUP_PAD_X}px`,
-          height: `${(lastRow - firstRow) * ROW_HEIGHT + NODE_HEIGHT + 2 * GROUP_PAD_Y + GROUP_TAIL_PADDING}px`,
-        },
-        data: {
-          side: group.side,
-          label: group.label,
-          members: group.rows,
-        },
-      })
+    const sourceColumn: AimcLayoutItem[] = []
+    const sinkColumn: AimcLayoutItem[] = []
+    const replyLeft: AimcLayoutItem[] = []
+    const replyRight: AimcLayoutItem[] = []
+
+    const groupOf = (
+      endpoint: AimcMapping['sources'][number] | AimcMapping['sinks'][number],
+      side: 'source' | 'sink',
+    ): string | undefined => {
+      const group = endpointGroup(endpoint, side)
+      if (!group) {
+        return undefined
+      }
+      const existing = groups.get(group.key)
+      if (existing) {
+        existing.members += 1
+      } else {
+        groups.set(group.key, { ...group, members: 1 })
+      }
+      return group.key
     }
 
-    const deliveryOfRow = (index: number): { kind: string, text: string } =>
-      sourceDelivery(mapping.sources[index]!, mapping.defaultPollingInterval)
-
-    for (const [index, source] of mapping.sources.entries()) {
-      const id = `${mapping.id}-source-${index}`
-      const delivery = deliveryOfRow(index)
+    const pushNode = (id: string, type: string, x: number, data: Record<string, unknown>): void => {
       nextNodes.push({
         id,
-        type: 'aimcSource',
-        position: { x: SOURCE_X, y: index * ROW_HEIGHT },
+        type,
+        position: { x, y: 0 },
         draggable: false,
         connectable: false,
         zIndex: INTERACTIVE_Z,
-        data: {
-          nodeId: id,
-          role: 'source',
-          label: source.sourceId || `source_${index}`,
-          kind: source.kind,
-          group: source.group,
-          deliveryKind: delivery.kind,
-          badges: sourceBadges(source, mapping.defaultPollingInterval),
-          keys: source.keys as AimcReferenceKey[],
-        },
+        data,
       })
+    }
+
+    const replyEdge = (id: string, edge: Partial<Edge> & { source: string, target: string }): void => {
+      nextEdges.push({
+        id,
+        class: 'aimc-edge aimc-edge--reply',
+        markerEnd: MarkerType.ArrowClosed,
+        ...edge,
+      } as Edge)
+    }
+
+    for (const [index, source] of mapping.sources.entries()) {
+      const id = `${mapping.id}-source-${index}`
+      const delivery = sourceDelivery(source, mapping.defaultPollingInterval)
+      sourceColumn.push({ id, group: groupOf(source, 'source') })
+      pushNode(id, 'aimcSource', SOURCE_X, {
+        nodeId: id,
+        role: 'source',
+        label: source.sourceId || `source_${index}`,
+        kind: source.kind,
+        deliveryKind: delivery.kind,
+        badges: sourceBadges(mapping, source),
+        member: source.resolved?.selectedMember,
+        keys: source.keys,
+        handles: [],
+      } satisfies AimcEndpointNodeData)
       nextEdges.push({
         id: `${id}-to-request`,
         source: id,
         target: requestNodeId,
         sourceHandle: 'forward',
         targetHandle: null,
-        label: source.sourceId ? `${source.sourceId} · ${delivery.text}` : delivery.text,
+        // A source outside the trigger selection is read, but does not run the mapping.
+        animated: source.triggers,
+        label: [source.sourceId, delivery.text].filter(Boolean).join(' · '),
         class: 'aimc-edge',
         markerEnd: MarkerType.ArrowClosed,
       })
-      if (hasResponseNode) {
-        nextEdges.push({
-          id: `${responseNodeId}-to-${id}`,
+      if (hasResponseNode && !hasExplicitReply && (!isOperation || index === operationIndex)) {
+        replyEdge(`${responseNodeId}-to-${id}`, {
           source: responseNodeId,
           target: id,
           sourceHandle: null,
           targetHandle: 'reply',
-          class: 'aimc-edge aimc-edge--reply',
-          markerEnd: MarkerType.ArrowClosed,
         })
       }
     }
 
     for (const [index, sink] of mapping.sinks.entries()) {
       const id = `${mapping.id}-sink-${index}`
-      nextNodes.push({
-        id,
-        type: 'aimcSink',
-        position: { x: SINK_X, y: index * ROW_HEIGHT },
-        draggable: false,
-        connectable: false,
-        zIndex: INTERACTIVE_Z,
-        data: {
-          nodeId: id,
-          role: 'sink',
-          label: sink.sinkId || `sink_${index}`,
-          kind: sink.kind,
-          group: sink.group,
-          deliveryKind: 'sink',
-          badges: sinkBadges(sink),
-          keys: sink.keys as AimcReferenceKey[],
-        },
-      })
+      sinkColumn.push({ id, group: groupOf(sink, 'sink') })
+      pushNode(id, 'aimcSink', SINK_X, {
+        nodeId: id,
+        role: 'sink',
+        label: sink.sinkId || `sink_${index}`,
+        kind: sink.kind,
+        deliveryKind: 'sink',
+        badges: sinkBadges(sink),
+        member: sink.resolved?.selectedMember,
+        keys: sink.keys,
+        handles: [],
+      } satisfies AimcEndpointNodeData)
       nextEdges.push({
         id: `${requestNodeId}-to-${id}`,
         source: requestNodeId,
         target: id,
         sourceHandle: null,
-        targetHandle: null,
+        targetHandle: 'forward',
         label: sink.sinkId || undefined,
         class: 'aimc-edge',
         markerEnd: MarkerType.ArrowClosed,
       })
-      if (hasResponseNode) {
-        nextEdges.push({
-          id: `${id}-to-response`,
+      const answersCaller = isOperation && sink.kind === 'affordance'
+      if (hasResponseNode && !hasExplicitReply && (!isOperation || answersCaller)) {
+        replyEdge(`${id}-to-response`, {
           source: id,
           target: responseNodeId,
           sourceHandle: 'reply',
           targetHandle: null,
-          class: 'aimc-edge aimc-edge--reply',
-          markerEnd: MarkerType.ArrowClosed,
         })
       }
     }
 
-    nextNodes.push({
-      id: requestNodeId,
-      type: 'aimcTransform',
-      position: { x: TRANSFORM_X, y: requestY },
-      draggable: false,
-      connectable: false,
-      zIndex: INTERACTIVE_Z,
-      data: {
-        direction: 'request',
-        label: 'Transformation',
-        absent: !mapping.request.present || mapping.request.code === '',
-        lines: lineCount(mapping.request.code),
-      },
-    })
+    if (hasExplicitReply) {
+      for (const [index, endpoint] of mapping.responseSources.entries()) {
+        const id = `${mapping.id}-response-source-${index}`
+        replyRight.push({ id })
+        pushNode(id, 'aimcResponseEndpoint', SINK_X, {
+          side: 'source',
+          label: endpoint.id || `response source ${index + 1}`,
+          affordance: endpoint.resolved?.affordancePath,
+          member: endpoint.resolved?.selectedMember,
+        })
+        replyEdge(`${id}-to-response`, { source: id, target: responseNodeId, targetHandle: null, label: endpoint.id })
+      }
 
+      if (mapping.responseSources.length === 0 && operationIndex !== -1) {
+        const id = `${mapping.id}-implicit-response-source`
+        replyRight.push({ id })
+        pushNode(id, 'aimcResponseEndpoint', SINK_X, {
+          side: 'source',
+          label: mapping.sources[operationIndex]!.sourceId,
+          member: 'whole device reply',
+        })
+        replyEdge(`${id}-to-response`, { source: id, target: responseNodeId, targetHandle: null })
+      }
+
+      for (const [index, endpoint] of mapping.responseSinks.entries()) {
+        const id = `${mapping.id}-response-sink-${index}`
+        replyLeft.push({ id })
+        pushNode(id, 'aimcResponseEndpoint', SOURCE_X, {
+          side: 'sink',
+          label: endpoint.id || `response sink ${index + 1}`,
+          affordance: endpoint.resolved?.affordancePath,
+          member: endpoint.resolved?.selectedMember,
+        })
+        replyEdge(`${responseNodeId}-to-${id}`, { source: responseNodeId, target: id, sourceHandle: null, label: endpoint.id })
+      }
+
+      if (operationIndex !== -1 && !mapping.responseSinks.some(endpoint => endpoint.resolved?.kind === 'operation')) {
+        replyEdge(`${mapping.id}-response-to-caller`, {
+          source: responseNodeId,
+          target: `${mapping.id}-source-${operationIndex}`,
+          sourceHandle: null,
+          targetHandle: 'reply',
+          label: 'caller reply',
+        })
+      }
+    }
+
+    // Each source and sink draws only the points its edges use, request first.
+    const endpointHandles = new Map<string, Array<'forward' | 'reply'>>()
+    for (const node of nextNodes) {
+      if (node.type === 'aimcSource' || node.type === 'aimcSink') {
+        const used = (['forward', 'reply'] as const).filter(handle => nextEdges.some(edge =>
+          (edge.source === node.id && edge.sourceHandle === handle) || (edge.target === node.id && edge.targetHandle === handle)))
+        endpointHandles.set(node.id, used)
+        node.data.handles = used
+      }
+    }
+
+    const handles = transformHandles(nextEdges, requestNodeId, responseNodeId)
+    for (const edge of nextEdges) {
+      edge.zIndex = EDGE_Z
+    }
+
+    pushNode(requestNodeId, 'aimcTransform', TRANSFORM_X, {
+      handles: handles.get(requestNodeId) ?? [],
+      direction: 'request',
+      label: 'Transformation',
+      entrypoint: 'aimc_main(sources)',
+      absent: !mapping.request.present || mapping.request.code === '',
+      lines: lineCount(mapping.request.code),
+    })
     if (hasResponseNode) {
-      nextNodes.push({
-        id: responseNodeId,
-        type: 'aimcTransform',
-        position: { x: TRANSFORM_X, y: responseY },
-        draggable: false,
-        connectable: false,
-        zIndex: INTERACTIVE_Z,
-        data: {
-          direction: 'response',
-          label: 'ResponseTransformation',
-          absent: !mapping.response.present || mapping.response.code === '',
-          lines: lineCount(mapping.response.code),
-        },
+      pushNode(responseNodeId, 'aimcTransform', TRANSFORM_X, {
+        handles: handles.get(responseNodeId) ?? [],
+        direction: 'response',
+        label: 'ResponseTransformation',
+        entrypoint: 'aimc_main(sources)',
+        absent: !mapping.response.present || mapping.response.code === '',
+        lines: lineCount(mapping.response.code),
       })
     }
 
-    return { nodes: nextNodes, edges: nextEdges }
+    for (const group of groups.values()) {
+      nextNodes.unshift({
+        id: `${mapping.id}-group-${group.key}`,
+        type: 'aimcGroup',
+        position: { x: (group.side === 'source' ? SOURCE_X : SINK_X) - GROUP_PAD_X, y: 0 },
+        draggable: false,
+        selectable: false,
+        connectable: false,
+        zIndex: GROUP_Z,
+        style: { width: `${NODE_WIDTH + 2 * GROUP_PAD_X}px` },
+        data: { groupKey: group.key, side: group.side, label: group.label, members: group.members, form: group.form },
+      })
+    }
+
+    // One lane: every column is centered on the same midline, so a source
+    // and sink that serve both directions sit level with the middle of the
+    // Transformation / ResponseTransformation pair. The reply part of each
+    // column follows its request part after the lane gap.
+    const replyPart = (items: AimcLayoutItem[]): AimcLayoutItem[] =>
+      items.map((item, index) => (index === 0 ? { ...item, gapBefore: AIMC_LANE_GAP } : item))
+    const middle: AimcLayoutItem[] = [{ id: requestNodeId }]
+    if (hasResponseNode) {
+      middle.push({ id: responseNodeId, gapBefore: AIMC_LANE_GAP })
+    }
+    const lanes: AimcLayoutLane[] = [[
+      [...sourceColumn, ...replyPart(replyLeft)],
+      middle,
+      [...sinkColumn, ...replyPart(replyRight)],
+    ]]
+    return { nodes: nextNodes, edges: nextEdges, lanes, groups, endpointHandles }
+  }
+
+  /**
+   * Gives every edge that meets a transformation its own connection point
+   * there, and points the edge at it. In the request lane edges enter on the
+   * left and leave on the right; the reply lane is mirrored.
+   */
+  function transformHandles (edges: Edge[], requestNodeId: string, responseNodeId: string): Map<string, TransformHandle[]> {
+    const handles = new Map<string, TransformHandle[]>([[requestNodeId, []], [responseNodeId, []]])
+    for (const edge of edges) {
+      const entering = handles.get(edge.target)
+      if (entering) {
+        const id = `in-${edge.id}`
+        entering.push({
+          id,
+          type: 'target',
+          position: edge.target === requestNodeId ? Position.Left : Position.Right,
+          top: '50%',
+          peer: edge.source,
+          peerHandle: edge.sourceHandle,
+        })
+        edge.targetHandle = id
+      }
+      const leaving = handles.get(edge.source)
+      if (leaving) {
+        const id = `out-${edge.id}`
+        leaving.push({
+          id,
+          type: 'source',
+          position: edge.source === requestNodeId ? Position.Right : Position.Left,
+          top: '50%',
+          peer: edge.target,
+          peerHandle: edge.targetHandle,
+        })
+        edge.sourceHandle = id
+      }
+    }
+    return handles
+  }
+
+  /** Where an edge meets the node at its other end, as a share of that node's height. */
+  function peerShare (graph: RouteGraph, peer: string, peerHandle: string | null | undefined): number {
+    const handles = graph.endpointHandles.get(peer) ?? []
+    const rank = handles.indexOf(peerHandle as 'forward' | 'reply')
+    // Response endpoints have a single point, in the middle.
+    return rank === -1 ? 0.5 : handleShare(rank, handles.length)
+  }
+
+  /**
+   * Spaces each transformation's connection points evenly per side, like
+   * every other node, ordered by the height of the node at the other end so
+   * that the edges do not cross.
+   */
+  function placeHandles (graph: RouteGraph, top: Map<string, number>, heightOf: (id: string) => number): void {
+    const level = (handle: TransformHandle): number =>
+      (top.get(handle.peer) ?? 0) + heightOf(handle.peer) * peerShare(graph, handle.peer, handle.peerHandle)
+    for (const node of graph.nodes) {
+      if (node.type !== 'aimcTransform') {
+        continue
+      }
+      const handles: TransformHandle[] = node.data.handles
+      const placed = new Map<string, string>()
+      for (const position of [Position.Left, Position.Right]) {
+        const side = handles
+          .filter(handle => handle.position === position)
+          .toSorted((a, b) => level(a) - level(b))
+        for (const [rank, handle] of side.entries()) {
+          placed.set(handle.id, `${handleShare(rank, side.length) * 100}%`)
+        }
+      }
+      updateNode(node.id, {
+        data: { ...node.data, handles: handles.map(handle => ({ ...handle, top: placed.get(handle.id) ?? '50%' })) },
+      })
+    }
+  }
+
+  /** Places every node of the route for the given node heights. */
+  function placeNodes (graph: RouteGraph, heightOf: (id: string) => number): void {
+    const layout = layoutAimcGraph(
+      graph.lanes,
+      heightOf,
+      key => GROUP_HEADER_HEIGHT + (graph.groups.get(key)?.form ? GROUP_FORM_HEIGHT : 0),
+    )
+    graphHeight.value = Math.min(MAX_GRAPH_HEIGHT, Math.max(MIN_GRAPH_HEIGHT, Math.round(layout.height + GRAPH_MARGIN_Y)))
+    for (const node of graph.nodes) {
+      if (node.type === 'aimcGroup') {
+        const frame = layout.frames.get(node.data.groupKey)
+        if (frame) {
+          updateNode(node.id, {
+            position: { x: node.position.x, y: frame.top },
+            style: { width: `${NODE_WIDTH + 2 * GROUP_PAD_X}px`, height: `${frame.height}px` },
+          })
+        }
+        continue
+      }
+      const top = layout.top.get(node.id)
+      if (top !== undefined) {
+        updateNode(node.id, { position: { x: node.position.x, y: top } })
+      }
+    }
+    placeHandles(graph, layout.top, heightOf)
+  }
+
+  function estimatedHeightOf (graph: RouteGraph): (id: string) => number {
+    const types = new Map(graph.nodes.map(node => [node.id, node.type ?? '']))
+    return id => ESTIMATED_HEIGHT[types.get(id) ?? ''] ?? 72
+  }
+
+  /**
+   * Waits until Vue Flow has measured the given nodes and returns their
+   * heights; falls back to the estimates if the graph is not rendered (e.g.
+   * inside a hidden container) and the nodes never get a size.
+   */
+  async function measuredHeightOf (graph: RouteGraph, token: number): Promise<((id: string) => number) | undefined> {
+    const ids = graph.lanes.flatMap(lane => lane.flat()).map(item => item.id)
+    const estimate = estimatedHeightOf(graph)
+    for (let frame = 0; frame < MEASURE_FRAMES; frame++) {
+      if (token !== layoutToken) {
+        return undefined
+      }
+      const heights = new Map(ids.map(id => [id, findNode(id)?.dimensions.height ?? 0]))
+      if ([...heights.values()].every(height => height > 0)) {
+        return id => heights.get(id) ?? estimate(id)
+      }
+      await new Promise(resolve => requestAnimationFrame(resolve))
+    }
+    return token === layoutToken ? estimate : undefined
   }
 
   /**
@@ -600,31 +735,46 @@
   }
 
   /**
-   * Swaps the graph over in two phases: nodes first, then edges once the
-   * handles exist. Committing both in the same tick lets Vue Flow resolve an
-   * edge against a handle it has not measured yet, which draws only part of the
-   * spline.
+   * Swaps the graph over in phases: nodes first (placed with estimated
+   * heights), then — once Vue Flow has measured them — the final placement,
+   * and the edges last, when the handles exist where they will stay.
+   * Committing edges in the same tick as their nodes lets Vue Flow resolve an
+   * edge against a handle it has not measured yet, which draws only part of
+   * the spline.
    */
   async function applyRoute (mapping: AimcMapping): Promise<void> {
+    const token = ++layoutToken
     const graph = buildGraph(mapping)
     expandedNodeId.value = ''
+    laidOut.value = false
     // The previous route's edges go first so no stale path is bound to the new
     // node ids while the new ones are still unmeasured.
     edges.value = []
     nodes.value = graph.nodes
     await nextTick()
+    placeNodes(graph, estimatedHeightOf(graph))
+
+    const heightOf = await measuredHeightOf(graph, token)
+    if (!heightOf) {
+      return
+    }
+    placeNodes(graph, heightOf)
+    await nextTick()
+    // The transformations' connection points moved; Vue Flow re-reads their
+    // positions before any edge is bound to them.
+    updateNodeInternals(graph.nodes.filter(node => node.type === 'aimcTransform').map(node => node.id))
+    await nextTick()
     edges.value = graph.edges
     await nextTick()
+    // The canvas height may just have changed; let Vue Flow observe the new
+    // size before framing the route in it.
+    await new Promise(resolve => requestAnimationFrame(resolve))
+    if (token !== layoutToken) {
+      return
+    }
     await fitAll()
+    laidOut.value = true
   }
-
-  watch(
-    () => props.mapping,
-    async () => {
-      await applyRoute(props.mapping)
-    },
-    { immediate: true },
-  )
 
   function onInit (): void {
     void nextTick().then(fitAll)
@@ -650,12 +800,17 @@
 
 <style scoped>
   .aimc-graph {
-    height: 520px;
     min-width: 0;
+    transition: opacity 120ms ease-out;
   }
 
-  /* Origin frame around the endpoints of one SMC. It sits behind the endpoint
-     nodes, so it must not swallow their pointer events. */
+  /* Nodes still render (so they can be measured), just not visibly. */
+  .aimc-graph--pending {
+    opacity: 0;
+  }
+
+  /* Origin frame around the endpoints of one affordance. It sits behind the
+     endpoint nodes, so it must not swallow their pointer events. */
   .aimc-group {
     position: relative;
     height: 100%;
@@ -675,6 +830,7 @@
     position: absolute;
     top: 0;
     left: 12px;
+    max-width: calc(100% - 24px);
     height: 22px;
     display: flex;
     align-items: center;
@@ -682,6 +838,27 @@
     padding: 0 8px;
     border-radius: 0 0 8px 8px;
     background: rgba(128, 128, 128, 0.18);
+    overflow: hidden;
+    white-space: nowrap;
+  }
+
+  .aimc-group__label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
+
+  .aimc-group__form {
+    position: absolute;
+    top: 26px;
+    left: 12px;
+    max-width: calc(100% - 24px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: monospace;
+    font-size: 10px;
+    opacity: 0.72;
   }
 
   .aimc-node {
@@ -689,17 +866,7 @@
     border: 1px solid rgba(128, 128, 128, 0.5);
     background: rgb(var(--v-theme-surface));
     padding: 6px 10px;
-    min-width: 220px;
-    max-width: 250px;
-  }
-
-  .aimc-node--endpoint {
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
-  }
-
-  .aimc-node--expanded {
-    z-index: 5;
-    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.24);
+    width: 250px;
   }
 
   .aimc-node--selected {
@@ -707,10 +874,7 @@
     box-shadow: 0 0 0 1px rgb(var(--v-theme-primary));
   }
 
-  .aimc-node--transform {
-    min-width: 200px;
-  }
-
+  .aimc-node--response-endpoint,
   .aimc-node--response {
     border-style: dashed;
     border-color: rgb(var(--v-theme-secondary));
@@ -718,28 +882,6 @@
 
   .aimc-node--absent {
     opacity: 0.65;
-  }
-
-  /* Delivery mode tints the left accent of a source node. */
-  .aimc-node--polling {
-    border-left: 3px solid rgb(var(--v-theme-info));
-  }
-
-  .aimc-node--pushed {
-    border-left: 3px solid rgb(var(--v-theme-success));
-  }
-
-  /* Input and output connection points, split vertically on the flow side. */
-  :deep(.aimc-handle) {
-    border: 2px solid rgb(var(--v-theme-surface));
-  }
-
-  :deep(.aimc-handle--in) {
-    background: rgb(var(--v-theme-secondary));
-  }
-
-  :deep(.aimc-handle--out) {
-    background: rgb(var(--v-theme-primary));
   }
 
   .aimc-node__header {
@@ -760,51 +902,11 @@
     font-family: monospace;
     font-size: 11px;
     opacity: 0.7;
+    overflow-wrap: anywhere;
   }
 
   .aimc-node__open {
     margin-top: 6px;
-  }
-
-  .aimc-node__detail {
-    margin-top: 6px;
-    padding-top: 6px;
-    border-top: 1px dashed rgba(128, 128, 128, 0.4);
-  }
-
-  .aimc-node__detail-label {
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    opacity: 0.6;
-    margin-bottom: 2px;
-  }
-
-  .aimc-node__keys {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    font-family: monospace;
-    font-size: 11px;
-  }
-
-  .aimc-node__key {
-    display: flex;
-    flex-direction: column;
-    padding: 2px 0;
-    border-bottom: 1px dotted rgba(128, 128, 128, 0.25);
-    word-break: break-all;
-  }
-
-  .aimc-node__key:last-child {
-    border-bottom: none;
-  }
-
-  .aimc-node__key-type {
-    font-size: 9px;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    opacity: 0.55;
   }
 
   /* Dashed, marching splines. The reply lane keeps a coarser dash so the two

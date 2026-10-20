@@ -1,27 +1,38 @@
 /**
- * Parser tests for the AIMC visualization plugin.
+ * Parser and resolver tests for the AIMC visualization plugin.
  *
- * The fixtures are the real Submodel-Repository payloads shipped with this
- * repository, so the parser is exercised against the exact wire format the
- * BaSyx Submodel Repository returns.
+ * The fixtures are the DMP runtime-model contract fixtures of the AP2030-UNS
+ * repository (generated from aas-model by `scripts/dmp_contract_fixtures.py`):
+ * plain Submodel JSON, the exact wire format the BaSyx Submodel Repository
+ * returns, together with the AID and every other submodel a route references.
  */
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import { indexEndpoints } from './endpointIndex'
 import { parseAimc, parseAimcRoute } from './parseAimc'
+import { resolveAimcMapping, resolveAimcReference } from './resolveAimc'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
 /**
- * The fixtures are the real Submodel-Repository payloads of the AP2030-UNS
- * repository, which is not vendored here. Point the suite at a checkout with
- * `AIMC_FIXTURE_ROOT=/path/to/AP2030-UNS`; without it the fixture-driven suites
- * skip rather than fail, so this fork's own `pnpm test` stays green.
+ * The fixtures live in the AP2030-UNS repository, which is not vendored here.
+ * Point the suite at a checkout with `AIMC_FIXTURE_ROOT=/path/to/AP2030-UNS`;
+ * without it the fixture-driven suites skip rather than fail, so this fork's
+ * own `pnpm test` (and the Docker build) stays green.
  */
 const fixtureRoot = process.env.AIMC_FIXTURE_ROOT ?? resolve(here, '../../../../../..')
-const hasFixtures = existsSync(resolve(fixtureRoot, 'aas-model/tests/data_aimc.json'))
+const contractRoot = resolve(fixtureRoot, 'aas-camel-dmp/dmp.component/src/test/resources/runtime-model-contracts')
+const hasFixtures = existsSync(resolve(contractRoot, 'manifest.json'))
 const describeFixtures = hasFixtures ? describe : describe.skip
+
+interface ContractCase {
+  name: string
+  aimc: string
+  aid: string
+  dependencies: Array<{ id: string, path: string }>
+}
 
 /**
  * `describe.skip` still runs the suite body while collecting, so a suite that
@@ -36,8 +47,13 @@ function skipWithoutFixtures (): boolean {
   return false
 }
 
-function loadFixture (relativePath: string): any {
-  return JSON.parse(readFileSync(resolve(fixtureRoot, relativePath), 'utf8'))
+function loadJson (path: string): any {
+  return JSON.parse(readFileSync(path, 'utf8'))
+}
+
+/** Accepts a plain submodel or a Submodel Repository event envelope. */
+function unwrapSubmodel (payload: any): any {
+  return payload.modelType === 'Submodel' ? payload : payload.submodel
 }
 
 /**
@@ -64,28 +80,122 @@ function annotatePaths (node: any, path: string): any {
   return node
 }
 
-/** Loads a fixture and unwraps the Submodel Repository event envelope if present. */
-function parseFixture (relativePath: string) {
-  const payload = loadFixture(relativePath)
-  const submodel = payload.modelType === 'Submodel' ? payload : payload.submodel
-  const annotated = annotatePaths(submodel, 'http://aas-env:8081/submodels/aimc')
-  return parseAimc(annotated)
+/** One contract case: its annotated AIMC and every submodel its routes reference. */
+function loadCase (name: string): { aimc: any, submodels: Map<string, any> } {
+  const manifest = loadJson(resolve(contractRoot, 'manifest.json'))
+  const entry: ContractCase = manifest.cases.find((candidate: ContractCase) => candidate.name === name)
+  const aimc = annotatePaths(unwrapSubmodel(loadJson(resolve(contractRoot, entry.aimc))), 'http://aas-env:8081/submodels/aimc')
+  const aid = unwrapSubmodel(loadJson(resolve(contractRoot, entry.aid)))
+  const submodels = new Map<string, any>([[aid.id, aid]])
+  for (const dependency of entry.dependencies) {
+    submodels.set(dependency.id, unwrapSubmodel(loadJson(resolve(contractRoot, name, dependency.path))))
+  }
+  return { aimc, submodels }
 }
 
-/** Returns the raw (annotated) list items of a fixture's MappingConfigurations. */
-function routeItems (relativePath: string): any[] {
-  const payload = loadFixture(relativePath)
-  const submodel = payload.modelType === 'Submodel' ? payload : payload.submodel
-  const annotated = annotatePaths(submodel, 'http://aas-env:8081/submodels/aimc')
-  const list = annotated.submodelElements.find((element: any) => element.idShort === 'MappingConfigurations')
-  return list.value
+/** Returns the raw (annotated) list items of an AIMC's MappingConfigurations. */
+function routeItems (aimc: any): any[] {
+  return aimc.submodelElements.find((element: any) => element.idShort === 'MappingConfigurations').value
 }
 
-describeFixtures('parseAimc', () => {
+describe('parseAimc without fixtures', () => {
+  it('reports a warning for a submodel without mappings', () => {
+    expect(parseAimc({ modelType: 'Submodel', submodelElements: [] }).warnings[0])
+      .toContain('No MappingConfigurations')
+  })
+
+  it('reads ExecutionSemantics.TriggerSourceIds and flags unknown ids', () => {
+    const route = parseAimcRoute({
+      modelType: 'SubmodelElementCollection',
+      value: [
+        {
+          idShort: 'Sources',
+          modelType: 'SubmodelElementList',
+          value: ['A', 'B'].map(id => ({
+            modelType: 'SubmodelElementCollection',
+            value: [{ idShort: 'SourceId', modelType: 'Property', value: id }],
+          })),
+        },
+        {
+          idShort: 'ExecutionSemantics',
+          modelType: 'SubmodelElementCollection',
+          value: [{
+            idShort: 'TriggerSourceIds',
+            modelType: 'SubmodelElementList',
+            value: ['A', 'C'].map(id => ({ modelType: 'Property', value: id })),
+          }],
+        },
+      ],
+    }, 0)
+    expect(route.triggerSourceIds).toEqual(['A', 'C'])
+    expect(route.sources.map(source => source.triggers)).toEqual([true, false])
+    expect(route.warnings).toEqual(['TriggerSourceIds names "C", which is not a SourceId of this route.'])
+  })
+
+  it('warns about routes sharing an idShort, which the DMP rejects', () => {
+    const route = (idShort: string) => ({
+      idShort,
+      modelType: 'SubmodelElementCollection',
+      value: [{ idShort: 'Sources', modelType: 'SubmodelElementList', value: [] }],
+    })
+    const { warnings } = parseAimc({
+      modelType: 'Submodel',
+      submodelElements: [{ idShort: 'MappingConfigurations', modelType: 'SubmodelElementList', value: [route('A'), route('A'), route('B')] }],
+    })
+    expect(warnings).toEqual(['Several routes share the idShort "A"; the DMP rejects duplicate mapping identities.'])
+  })
+
+  it('lets every source trigger when no selection is declared', () => {
+    const route = parseAimcRoute({
+      modelType: 'SubmodelElementCollection',
+      value: [{
+        idShort: 'Sources',
+        modelType: 'SubmodelElementList',
+        value: [{ modelType: 'SubmodelElementCollection', value: [{ idShort: 'SourceId', modelType: 'Property', value: 'A' }] }],
+      }],
+    }, 0)
+    expect(route.triggerSourceIds).toEqual([])
+    expect(route.sources[0]!.triggers).toBe(true)
+  })
+})
+
+const idtaTemplateRoot = resolve(fixtureRoot, 'aas-model/submodel-templates/published/Asset Interfaces Mapping Configuration')
+
+describeFixtures('plain IDTA AIMC templates, without the DMP extensions', () => {
   if (skipWithoutFixtures()) {
     return
   }
-  const result = parseFixture('aas-model/tests/data_aimc.json')
+
+  it.each(['2/0', '2/1'])('parses and resolves the published %s example', version => {
+    const environment = loadJson(resolve(idtaTemplateRoot, version, 'IDTA 02027_Template_AIMC.json'))
+    const submodel = annotatePaths(environment.submodels[0], 'http://aas-env:8081/submodels/aimc')
+    const { mappings, warnings } = parseAimc(submodel)
+    expect(warnings).toEqual([])
+    expect(mappings).toHaveLength(1)
+
+    const [route] = mappings
+    expect(route!.sources).toHaveLength(1)
+    expect(route!.sinks).toHaveLength(1)
+    expect(route!.sources[0]!.pollingInterval).toBe(1)
+    expect(route!.defaultPollingInterval).toBe(1)
+    // None of the DMP extensions are present, and none are required.
+    expect(route!.response.present).toBe(false)
+    expect(route!.triggerSourceIds).toEqual([])
+    expect(route!.bidirectional).toBe(false)
+
+    // The template's example references are empty: reported, not thrown.
+    const resolved = resolveAimcMapping(route!, new Map())
+    expect(resolved.kind).toBe('data')
+    expect(resolved.warnings).toEqual(['A Source or Sink has no reference set.', 'A Source or Sink has no reference set.'])
+  })
+})
+
+describeFixtures('parseAimc (stoppering)', () => {
+  if (skipWithoutFixtures()) {
+    return
+  }
+  const { aimc } = loadCase('stoppering')
+  const result = parseAimc(aimc)
 
   it('finds the MappingConfigurations list despite its 1/0 semantic id', () => {
     expect(result.warnings).toEqual([])
@@ -102,64 +212,38 @@ describeFixtures('parseAimc', () => {
     ])
   })
 
-  it('gives every route a repository path under the list', () => {
+  it('gives every route and its transformation blob a repository path under the list', () => {
     for (const mapping of result.mappings) {
       expect(mapping.path).toMatch(/MappingConfigurations\[\d+\]$/)
+      expect(mapping.request.path).toMatch(/MappingConfigurations\[\d+\]\.Transformation$/)
     }
   })
 })
 
-describe('parseAimc without fixtures', () => {
-  it('reports a warning for a submodel without mappings', () => {
-    expect(parseAimc({ modelType: 'Submodel', submodelElements: [] }).warnings[0])
-      .toContain('No MappingConfigurations')
-  })
-
-  it('states whether the fixture-backed suites will run', () => {
-    // Documents the skip: set AIMC_FIXTURE_ROOT at an AP2030-UNS checkout to
-    // exercise the real payloads.
-    expect(hasFixtures).toBe(existsSync(resolve(fixtureRoot, 'aas-model/tests/data_aimc.json')))
-  })
-})
-
-describeFixtures('parseAimcRoute', () => {
+describeFixtures('parseAimcRoute (stoppering)', () => {
   if (skipWithoutFixtures()) {
     return
   }
-  const items = routeItems('aas-model/tests/data_aimc.json')
+  const items = routeItems(loadCase('stoppering').aimc)
 
   it('parses a single route on its own, without the surrounding submodel', () => {
     const mqtt = parseAimcRoute(items[0], 0)
     expect(mqtt.name).toBe('MQTT')
-    expect(mqtt.sources).toHaveLength(1)
-    expect(mqtt.sinks).toHaveLength(2)
+    expect(mqtt.sources.map(source => source.sourceId)).toEqual(['StationState'])
+    expect(mqtt.sinks.map(sink => sink.sinkId)).toEqual(['PackMLState', 'OccupationState'])
   })
 
   it('decodes the request transformation blob into Lua', () => {
     const mqtt = parseAimcRoute(items[0], 0)
     expect(mqtt.request.present).toBe(true)
     expect(mqtt.request.code).toContain('function aimc_main(sources)')
-    expect(mqtt.request.code).toContain('sources.StationState.State')
   })
 
-  it('gives the transformation blob a writable repository path', () => {
-    expect(parseAimcRoute(items[0], 0).request.path)
-      .toMatch(/MappingConfigurations\[\d+\]\.Transformation$/)
-  })
-
-  it('parses an AID affordance source with its protocol and group', () => {
+  it('takes the protocol from the interface the reference names', () => {
     const [source] = parseAimcRoute(items[0], 0).sources
-    expect(source!.sourceId).toBe('StationState')
-    expect(source!.kind).toBe('affordance')
-    expect(source!.group).toBe('properties')
     expect(source!.protocol).toBe('mqtt')
+    expect(source!.kind).toBe('unknown')
     expect(source!.refPath).toContain('InteractionMetadata')
-  })
-
-  it('parses plain AAS element sinks', () => {
-    const mqtt = parseAimcRoute(items[0], 0)
-    expect(mqtt.sinks.map(sink => sink.sinkId)).toEqual(['PackMLState', 'OccupationState'])
-    expect(mqtt.sinks.every(sink => sink.kind === 'aas-element')).toBe(true)
   })
 
   it('does not mark a unidirectional data route as bi-directional', () => {
@@ -169,56 +253,130 @@ describeFixtures('parseAimcRoute', () => {
   })
 
   it('carries the raw blob element so an edit cannot drop its semanticId', () => {
-    const mqtt = parseAimcRoute(items[0], 0)
-    expect(mqtt.request.element?.semanticId).toBeDefined()
+    expect(parseAimcRoute(items[0], 0).request.element?.semanticId).toBeDefined()
   })
-})
 
-describeFixtures('parseAimcRoute (DMP operation delegations)', () => {
-  if (skipWithoutFixtures()) {
-    return
-  }
-  const items = routeItems('aas-camel-dmp/management-node/tests/data/syntegon_stoppering_aimc.json')
-
-  it('classifies a CCI Operation source as an operation delegation', () => {
+  it('defers route classification until the Operation and action targets resolve', () => {
     const halt = parseAimcRoute(items[1], 1)
     expect(halt.name).toBe('Halt')
-    expect(halt.kind).toBe('operation')
-    expect(halt.sources[0]!.kind).toBe('operation')
+    expect(halt.kind).toBe('data')
     expect(halt.sources[0]!.refPath).toContain('Skills/Halt/operation')
-    expect(halt.sinks[0]!.kind).toBe('affordance')
-    expect(halt.sinks[0]!.group).toBe('actions')
-  })
-
-  it('is bi-directional even without a reply blob (the reply defaults to passthrough)', () => {
-    const halt = parseAimcRoute(items[1], 1)
-    expect(halt.bidirectional).toBe(true)
-    expect(halt.response.present).toBe(false)
-    expect(halt.response.code).toBe('')
+    expect(halt.sinks[0]!.kind).toBe('unknown')
   })
 })
 
-describeFixtures('parseAimcRoute (DMP ResponseTransformation extension)', () => {
+describeFixtures('semantic AID reference resolution (stoppering)', () => {
   if (skipWithoutFixtures()) {
     return
   }
-  const items = routeItems('aas-camel-dmp/management-node/tests/data/events/sm_created.json')
+  const { aimc, submodels } = loadCase('stoppering')
+  const items = routeItems(aimc)
+
+  it('resolves the action ancestor and its input schema from the URL-form Submodel id', () => {
+    const route = parseAimcRoute(items[1], 1)
+    const resolved = resolveAimcReference(route.sinks[0]!.keys, submodels)
+    expect(resolved.kind).toBe('affordance')
+    expect(resolved.affordancePath).toBe('actions/Halt')
+    expect(resolved.direction).toBe('input')
+    expect(resolved.selectedMember).toBeUndefined()
+    expect(resolved.form).toBeTruthy()
+  })
+
+  it('reports unavailable references rather than grouping them as affordances', () => {
+    const route = parseAimcRoute(items[1], 1)
+    const resolved = resolveAimcReference(route.sinks[0]!.keys, new Map())
+    expect(resolved.kind).toBe('unknown')
+    expect(resolved.warning).toContain('could not be loaded')
+  })
+
+  it('classifies an Operation bound to an AID action as a request/reply operation mapping', () => {
+    const halt = resolveAimcMapping(parseAimcRoute(items[1], 1), submodels)
+    expect(halt.sources[0]!.kind).toBe('operation')
+    expect(halt.kind).toBe('delegated-action')
+    expect(halt.bidirectional).toBe(true)
+    expect(halt.warnings).toEqual([])
+  })
+
+  it('resolves a data route to its property source and AAS element sinks', () => {
+    const mqtt = resolveAimcMapping(parseAimcRoute(items[0], 0), submodels)
+    expect(mqtt.kind).toBe('data')
+    expect(mqtt.sources[0]!.group).toBe('properties')
+    expect(mqtt.sinks.map(sink => sink.kind)).toEqual(['aas-element', 'aas-element'])
+    expect(mqtt.warnings).toEqual([])
+  })
+})
+
+describeFixtures('OPC UA only station (imaDispensing)', () => {
+  if (skipWithoutFixtures()) {
+    return
+  }
+  const { aimc, submodels } = loadCase('station-imaDispensing')
+  const routes = parseAimc(aimc).mappings.map(route => resolveAimcMapping(route, submodels))
+
+  it('takes the protocol from interface_opcua instead of assuming MQTT', () => {
+    const state = routes[0]!
+    expect(state.sources.map(source => source.sourceId)).toEqual(['State', 'ProcessQueue'])
+    expect(state.sources.every(source => source.protocol === 'opcua')).toBe(true)
+    expect(state.sinks.map(sink => sink.sinkId)).toEqual(['PackMLState', 'OccupationState'])
+  })
+
+  it('resolves every route without warnings', () => {
+    expect(routes.flatMap(route => route.warnings ?? [])).toEqual([])
+  })
+
+  it('indexes every endpoint with the routes that read and write it', () => {
+    const index = indexEndpoints(routes)
+    const state = index.find(entry => entry.label === 'State')!
+    expect(state.kind).toBe('affordance')
+    expect(state.group).toBe('properties')
+    expect(state.origin).toBe('AssetInterfacesDescription · interface_opcua')
+    expect(state.readers.map(use => use.endpointId)).toEqual(['State'])
+    expect(state.writers).toEqual([])
+
+    const packml = index.find(entry => entry.label === 'PackMLState')!
+    expect(packml.kind).toBe('aas-element')
+    expect(packml.origin).toBe('Variables')
+    expect(packml.writers.map(use => use.routeName)).toEqual([routes[0]!.name])
+
+    // An action is written by its operation route.
+    const halt = index.find(entry => entry.group === 'actions' && entry.label === 'Halt')!
+    expect(halt.writers).toHaveLength(1)
+  })
+
+  it('gives every route the identity the DMP keys it by', () => {
+    expect(routes.map(route => route.identity)).toEqual(routes.map((_, index) => `mapping_${index}`))
+  })
+
+  it('reads a per-source PollingInterval', () => {
+    const weight = routes.find(route => route.sources.some(source => source.sourceId === 'Weight'))!
+    expect(weight.sources[0]!.pollingInterval).toBe(0.1)
+  })
+})
+
+describeFixtures('DMP extensions (projection-extensions)', () => {
+  if (skipWithoutFixtures()) {
+    return
+  }
+  const { aimc, submodels } = loadCase('projection-extensions')
+  const [route] = parseAimc(aimc).mappings
 
   it('decodes the response blob and gives it its own path', () => {
-    const mapping = parseAimcRoute(items[5], 5)
-    expect(mapping.name).toBe('ParameterWriteMqtt')
-    expect(mapping.response.code).toContain('function aimc_main(sources)')
-    expect(mapping.response.path).toMatch(/MappingConfigurations\[\d+\]\.ResponseTransformation$/)
-    expect(mapping.request.path).not.toBe(mapping.response.path)
+    expect(route!.response.present).toBe(true)
+    expect(route!.response.code).toContain('function aimc_main(sources)')
+    expect(route!.response.path).toMatch(/MappingConfigurations\[\d+\]\.ResponseTransformation$/)
+    expect(route!.request.path).not.toBe(route!.response.path)
+    expect(route!.bidirectional).toBe(true)
   })
 
-  it('is bi-directional because the reply blob is authored', () => {
-    expect(parseAimcRoute(items[5], 5).bidirectional).toBe(true)
+  it('reads the trigger selection', () => {
+    expect(route!.triggerSourceIds).toEqual(['invoke'])
+    expect(route!.sources[0]!.triggers).toBe(true)
   })
 
-  it('detects the writeDelegation qualifier and classifies the route', () => {
-    const mapping = parseAimcRoute(items[5], 5)
-    expect(mapping.kind).toBe('property-write')
-    expect(mapping.writeDelegation).toContain('http')
+  it('warns that response elements are not valid on a route that is not an operation mapping', () => {
+    // The Operation sinks into an AAS Property, which the DMP does not compile as a bridge.
+    const resolved = resolveAimcMapping(route!, submodels)
+    expect(resolved.kind).toBe('data')
+    expect(resolved.warnings).toEqual([expect.stringContaining('only valid on an operation mapping')])
   })
 })

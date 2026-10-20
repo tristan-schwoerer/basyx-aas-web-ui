@@ -8,7 +8,6 @@
  * from the IEC 61360 `class` preferred name where possible.
  */
 import type {
-  AimcEndpointKind,
   AimcMapping,
   AimcMappingKind,
   AimcReferenceKey,
@@ -16,7 +15,17 @@ import type {
   AimcSource,
   AimcTransformation,
 } from '../types'
-import { AIMC_RESPONSE_TRANSFORMATION, AIMC_SINKS, AIMC_SOURCES, AIMC_TRANSFORMATION, WRITE_DELEGATION_QUALIFIER } from '../types/semanticIds'
+import {
+  AIMC_EXECUTION_SEMANTICS,
+  AIMC_RESPONSE_SINKS,
+  AIMC_RESPONSE_SOURCES,
+  AIMC_RESPONSE_TRANSFORMATION,
+  AIMC_SINKS,
+  AIMC_SOURCES,
+  AIMC_TRANSFORMATION,
+  AIMC_TRIGGER_SOURCE_IDS,
+} from '../types/semanticIds'
+import { dmpMappingIdentity } from './dmpStatus'
 
 /** idShort values that carry no author intent for a list item. */
 const PLACEHOLDER_NAMES = new Set([
@@ -27,8 +36,6 @@ const PLACEHOLDER_NAMES = new Set([
   'mapping',
   'Blob',
 ])
-
-const AFFORDANCE_GROUPS = ['properties', 'actions', 'events'] as const
 
 /** Blob placeholders written by tooling that serialised python `None`/`b''`. */
 const EMPTY_BLOB_PLACEHOLDERS = new Set(['None', 'null', 'b\'\''])
@@ -112,22 +119,6 @@ function protocolOf (keys: AimcReferenceKey[]): string {
   return interfaceKey ? interfaceKey.value.replace(/^interface[_.-]/i, '') : ''
 }
 
-/** Classifies a reference as AID affordance, CCI Operation, or plain AAS element. */
-function classifyReference (keys: AimcReferenceKey[]): { kind: AimcEndpointKind, group?: 'properties' | 'actions' | 'events' } {
-  if (keys.length === 0) {
-    return { kind: 'unknown' }
-  }
-  const lastKey = keys.at(-1)
-  if (lastKey?.type === 'Operation') {
-    return { kind: 'operation' }
-  }
-  if (keys.some(key => key.value === 'InteractionMetadata')) {
-    const group = keys.find(key => (AFFORDANCE_GROUPS as readonly string[]).includes(key.value))?.value
-    return group ? { kind: 'affordance', group: group as 'properties' | 'actions' | 'events' } : { kind: 'affordance' }
-  }
-  return { kind: 'aas-element' }
-}
-
 function referencePath (keys: AimcReferenceKey[]): string {
   return keys.map(key => key.value).join('/')
 }
@@ -157,44 +148,45 @@ function mappingName (mapping: any, index: number): string {
   return `mapping_${index}`
 }
 
-function qualifierValue (mapping: any, type: string): string | undefined {
-  const qualifiers = Array.isArray(mapping?.qualifiers) ? mapping.qualifiers : []
-  for (const qualifier of qualifiers) {
-    if (qualifier?.type === type && typeof qualifier.value === 'string' && qualifier.value !== '') {
-      return qualifier.value
-    }
-  }
-  return undefined
-}
-
 function parseSource (source: any): AimcSource {
   const keys = referenceKeys(findByIdShortOrSemanticId(source, 'Source'))
-  const { kind, group } = classifyReference(keys)
   return {
     sourceId: isPropertyValue(findByIdShortOrSemanticId(source, 'SourceId')) || source?.idShort || '',
     keys,
-    kind,
-    group,
+    kind: 'unknown',
     refPath: referencePath(keys),
     protocol: protocolOf(keys),
     submodelId: keys[0]?.value ?? '',
     pollingInterval: isDouble(findByIdShortOrSemanticId(source, 'PollingInterval')),
+    triggers: true,
   }
 }
 
 function parseSink (sink: any): AimcSink {
   const keys = referenceKeys(findByIdShortOrSemanticId(sink, 'Sink'))
-  const { kind, group } = classifyReference(keys)
   return {
     sinkId: isPropertyValue(findByIdShortOrSemanticId(sink, 'SinkId')) || sink?.idShort || '',
     keys,
-    kind,
-    group,
+    kind: 'unknown',
     refPath: referencePath(keys),
     protocol: protocolOf(keys),
     submodelId: keys[0]?.value ?? '',
-    isOperation: keys.at(-1)?.type === 'Operation',
   }
+}
+
+function parseResponseEndpoints (mapping: any, idShort: string, semanticId: string): AimcMapping['responseSources'] {
+  const list = findByIdShortOrSemanticId(mapping, idShort, semanticId)
+  return children(list).map(element => {
+    const ref = findByIdShortOrSemanticId(element, idShort === 'ResponseSources' ? 'Source' : 'Sink')
+    const keys = referenceKeys(ref)
+    return {
+      id: isPropertyValue(findByIdShortOrSemanticId(element, idShort === 'ResponseSources' ? 'SourceId' : 'SinkId'))
+        || element?.idShort || '',
+      keys,
+      refPath: referencePath(keys),
+      submodelId: keys[0]?.value ?? '',
+    }
+  })
 }
 
 function parseTransformation (
@@ -213,17 +205,11 @@ function parseTransformation (
   }
 }
 
-function classifyMapping (mapping: any, sources: AimcSource[]): AimcMappingKind {
-  if (qualifierValue(mapping, WRITE_DELEGATION_QUALIFIER) !== undefined) {
-    return 'property-write'
-  }
-  if (sources.some(source => source.kind === 'operation')) {
-    return 'operation'
-  }
-  if (sources.length > 0) {
-    return 'data'
-  }
-  return 'unknown'
+/** Reads `ExecutionSemantics.TriggerSourceIds`; empty when the route does not declare it. */
+function parseTriggerSourceIds (mapping: any): string[] {
+  const semantics = findByIdShortOrSemanticId(mapping, 'ExecutionSemantics', AIMC_EXECUTION_SEMANTICS)
+  const list = findByIdShortOrSemanticId(semantics, 'TriggerSourceIds', AIMC_TRIGGER_SOURCE_IDS)
+  return children(list).map(element => isPropertyValue(element)).filter(value => value !== '')
 }
 
 /** Locates the MappingConfigurations list inside a submodel. */
@@ -247,27 +233,41 @@ function findMappingConfigurations (submodel: any): any {
 export function parseAimcRoute (mapping: any, index: number): AimcMapping {
   const sourcesList = findByIdShortOrSemanticId(mapping, 'Sources', AIMC_SOURCES)
   const sinksList = findByIdShortOrSemanticId(mapping, 'Sinks', AIMC_SINKS)
+  const triggerSourceIds = parseTriggerSourceIds(mapping)
   const sources = children(sourcesList).map(element => parseSource(element))
+  if (triggerSourceIds.length > 0) {
+    for (const source of sources) {
+      source.triggers = triggerSourceIds.includes(source.sourceId)
+    }
+  }
   const sinks = children(sinksList).map(element => parseSink(element))
   const request = parseTransformation(mapping, 'Transformation', AIMC_TRANSFORMATION, 'request')
   const response = parseTransformation(mapping, 'ResponseTransformation', AIMC_RESPONSE_TRANSFORMATION, 'response')
-  const kind = classifyMapping(mapping, sources)
+  const responseSources = parseResponseEndpoints(mapping, 'ResponseSources', AIMC_RESPONSE_SOURCES)
+  const responseSinks = parseResponseEndpoints(mapping, 'ResponseSinks', AIMC_RESPONSE_SINKS)
+  const kind: AimcMappingKind = 'data'
+  const knownSourceIds = new Set(sources.map(source => source.sourceId))
+  const warnings = triggerSourceIds
+    .filter(id => !knownSourceIds.has(id))
+    .map(id => `TriggerSourceIds names "${id}", which is not a SourceId of this route.`)
 
   return {
     id: `mapping_${index}`,
     name: mappingName(mapping, index),
     index,
+    identity: dmpMappingIdentity(mapping?.idShort, index),
     kind,
     sources,
     sinks,
     defaultPollingInterval: isDouble(findByIdShortOrSemanticId(mapping, 'DefaultPollingInterval')),
+    triggerSourceIds,
     request,
     response,
-    writeDelegation: qualifierValue(mapping, WRITE_DELEGATION_QUALIFIER),
+    responseSources,
+    responseSinks,
+    warnings,
     path: mapping?.path ?? '',
-    // A reply flows whenever a response transformation is authored, or the
-    // mapping is an operation delegation (whose reply defaults to passthrough).
-    bidirectional: response.present || kind === 'operation',
+    bidirectional: response.present,
   }
 }
 
@@ -314,6 +314,12 @@ export function parseAimc (submodel: any): ParseAimcResult {
 
   if (mappings.length === 0) {
     warnings.push('The MappingConfigurations list is empty.')
+  }
+
+  // The DMP keys a route by its idShort and rejects every route that shares one.
+  const identities = mappings.map(mapping => mapping.identity)
+  for (const identity of new Set(identities.filter((identity, index) => identities.indexOf(identity) !== index))) {
+    warnings.push(`Several routes share the idShort "${identity}"; the DMP rejects duplicate mapping identities.`)
   }
 
   return { mappings, warnings }

@@ -24,9 +24,7 @@ export type AimcAffordanceGroup = 'properties' | 'actions' | 'events'
 /** Classification of a whole MappingConfiguration, mirroring the DMP resolver. */
 export type AimcMappingKind
   = | 'data' // plain data mapping
-    | 'operation' // Operation source -> action affordance sink (request/reply)
-    | 'property-write' // writeDelegation qualified
-    | 'unknown'
+    | 'delegated-action' // Operation source -> AID affordance sink (request/reply)
 
 /** A Lua transformation blob (request- or response-direction). */
 export interface AimcTransformation {
@@ -59,8 +57,16 @@ export interface AimcSource {
   group?: AimcAffordanceGroup
   /** Owning submodel id (first reference key value). */
   submodelId: string
-  /** Effective polling interval in seconds, if any. */
+  /** Per-source polling interval in seconds, if declared. */
   pollingInterval?: number
+  /**
+   * `false` when the route declares `ExecutionSemantics.TriggerSourceIds` and
+   * this source is not among them: its value is read, but its updates do not
+   * execute the mapping.
+   */
+  triggers: boolean
+  /** Semantic resolution of the physical AAS/AID target. */
+  resolved?: AimcResolvedEndpoint
 }
 
 /** A sink (output) of a mapping. */
@@ -72,8 +78,26 @@ export interface AimcSink {
   protocol: string
   group?: AimcAffordanceGroup
   submodelId: string
-  /** Set when the sink is a CCI Operation used for a write-back reply. */
-  isOperation?: boolean
+  resolved?: AimcResolvedEndpoint
+}
+
+export interface AimcResolvedEndpoint {
+  kind: AimcEndpointKind
+  affordanceId?: string
+  affordancePath?: string
+  affordanceName?: string
+  direction?: 'input' | 'output'
+  selectedMember?: string
+  form?: string
+  warning?: string
+}
+
+export interface AimcResponseEndpoint {
+  id: string
+  keys: AimcReferenceKey[]
+  refPath: string
+  submodelId: string
+  resolved?: AimcResolvedEndpoint
 }
 
 /** One parsed MappingConfiguration. */
@@ -84,15 +108,23 @@ export interface AimcMapping {
   name: string
   /** Index within the MappingConfigurations list. */
   index: number
+  /** The identity the DMP keys this route by: the item's idShort, or `mapping_<index>`. */
+  identity: string
   kind: AimcMappingKind
   sources: AimcSource[]
   sinks: AimcSink[]
   /** Default polling interval of the MappingConfiguration, if declared. */
   defaultPollingInterval?: number
+  /**
+   * `ExecutionSemantics.TriggerSourceIds`: the SourceIds whose updates execute
+   * the mapping. Empty when not declared, in which case every source triggers.
+   */
+  triggerSourceIds: string[]
   request: AimcTransformation
   response: AimcTransformation
-  /** `writeDelegation` qualifier value, when present. */
-  writeDelegation?: string
+  responseSources: AimcResponseEndpoint[]
+  responseSinks: AimcResponseEndpoint[]
+  warnings?: string[]
   /** Repository path of the MappingConfiguration collection. */
   path: string
   /**

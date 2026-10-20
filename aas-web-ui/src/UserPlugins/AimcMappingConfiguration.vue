@@ -37,60 +37,14 @@
 
       <!-- No route selected: the index doubles as the way in. It never renders
            the whole submodel as one flow. -->
-      <v-card v-else-if="!focusedRoute" class="mb-4">
-        <v-toolbar color="cardHeader" density="compact">
-          <v-list-item>
-            <v-list-item-title>
-              <span class="text-title-small">
-                Select a route to visualize its flow
-              </span>
-            </v-list-item-title>
-          </v-list-item>
-        </v-toolbar>
-
-        <v-divider />
-
-        <v-list density="compact">
-          <v-list-item
-            v-for="route in routes"
-            :key="route.id"
-            :subtitle="routeSubtitle(route)"
-            :title="route.name"
-            @click="focusRoute(route)"
-          >
-            <template #prepend>
-              <v-icon
-                density="compact"
-                size="small"
-              >
-                {{ kindIcons[route.kind] }}
-              </v-icon>
-            </template>
-
-            <template #append>
-              <v-chip
-                v-if="route.bidirectional"
-                color="secondary"
-                density="compact"
-                label
-                size="x-small"
-                variant="tonal"
-              >
-                <v-icon density="compact" size="x-small">mdi-swap-horizontal</v-icon>
-                request / reply
-              </v-chip>
-
-              <v-icon
-                class="ml-2"
-                density="compact"
-                size="small"
-              >
-                mdi-chevron-right
-              </v-icon>
-            </template>
-          </v-list-item>
-        </v-list>
-      </v-card>
+      <AimcRouteIndex
+        v-else-if="!focusedRoute"
+        :dmp-loading="dmpLoading"
+        :dmp-status="dmpStatus"
+        :routes="routes"
+        @focus="focusRouteById"
+        @refresh-dmp="refreshDmpStatus"
+      />
 
       <template v-else>
         <!-- Route header: keeps the single route identifiable and lets the user
@@ -125,7 +79,22 @@
             request / reply
           </v-chip>
 
+          <AimcDmpStatusChip
+            class="ml-2"
+            :redeploy="focusedRouteRedeploy"
+            size="small"
+            :status="focusedRouteDmpStatus"
+          />
+
           <v-spacer />
+
+          <AimcDmpHealthChip
+            v-if="dmpStatus"
+            class="mr-2"
+            :loading="dmpLoading"
+            :status="dmpStatus"
+            @refresh="refreshDmpStatus"
+          />
 
           <v-btn
             :disabled="focusedRouteIndex <= 0"
@@ -141,6 +110,16 @@
             @click="stepRoute(1)"
           />
         </v-toolbar>
+
+        <v-alert
+          v-if="focusedRouteDmpProblem"
+          class="mb-3"
+          density="compact"
+          :type="focusedRouteDmpStatus?.state === 'stale' || focusedRouteDmpStatus?.state === 'installed' ? 'warning' : 'error'"
+          variant="tonal"
+        >
+          <span class="text-body-small">{{ focusedRouteDmpProblem }}</span>
+        </v-alert>
 
         <AimcMappingGraph
           class="mb-3"
@@ -223,12 +202,20 @@
    * dispatch a plugin on the AIMC submodel, never on an individual route. The
    * whole submodel is never rendered as a single flow — only the focused route.
    */
-  import type { AimcMapping, AimcMappingKind } from './aimc/types'
+  import type { DmpRouteStatus, DmpStatus } from './aimc/composables/dmpStatus'
+  import type { AimcMapping } from './aimc/types'
   import { useSMHandling } from '@/composables/AAS/SMHandling'
   import { useAASStore } from '@/store/AASDataStore'
+  import { useEnvStore } from '@/store/EnvironmentStore'
+  import AimcDmpHealthChip from './aimc/components/AimcDmpHealthChip.vue'
+  import AimcDmpStatusChip from './aimc/components/AimcDmpStatusChip.vue'
   import AimcMappingGraph from './aimc/components/AimcMappingGraph.vue'
+  import AimcRouteIndex from './aimc/components/AimcRouteIndex.vue'
   import AimcTransformationEditor from './aimc/components/AimcTransformationEditor.vue'
+  import { describeDmpCategory, fetchDmpStatus } from './aimc/composables/dmpStatus'
   import { parseAimc } from './aimc/composables/parseAimc'
+  import { resolveAimcMapping } from './aimc/composables/resolveAimc'
+  import { kindLabels } from './aimc/composables/routeLabels'
   import { AIMC_PLUGIN_SEMANTIC_IDS } from './aimc/types/semanticIds'
 
   defineOptions({
@@ -238,9 +225,10 @@
 
   // Stores
   const aasStore = useAASStore()
+  const envStore = useEnvStore()
 
   // Composables
-  const { setData } = useSMHandling()
+  const { setData, fetchSm, fetchSmById } = useSMHandling()
 
   // Props
   const props = defineProps({
@@ -258,23 +246,52 @@
   const direction = ref<'request' | 'response'>('request')
   const editor = ref<InstanceType<typeof AimcTransformationEditor>>()
   let visualizationUpdateId = 0
-
-  const kindLabels: Record<AimcMappingKind, string> = {
-    'data': 'data mapping',
-    'operation': 'operation delegation',
-    'property-write': 'property write',
-    'unknown': 'unclassified',
-  }
-
-  const kindIcons: Record<AimcMappingKind, string> = {
-    'data': 'mdi-arrow-right-bold-box',
-    'operation': 'mdi-swap-horizontal-bold',
-    'property-write': 'mdi-pencil-box',
-    'unknown': 'mdi-help-circle-outline',
-  }
+  const submodelCache = new Map<string, Promise<any>>()
+  // The DMP's deployment state of each route; `undefined` while the feature is off.
+  const dmpStatus = ref<DmpStatus>()
+  const dmpLoading = ref(false)
+  const aimcId = ref('')
+  let dmpTimer: ReturnType<typeof setInterval> | undefined
+  // How often the DMP status is re-read while the plugin is open.
+  const DMP_REFRESH_MS = 15_000
+  // After a save, the DMP swaps the route within milliseconds and publishes no
+  // intermediate state; the plugin polls briefly until the route's generation
+  // rises (or its state changes), and flags it if that does not happen.
+  const redeploy = ref<{ identity: string, fromGeneration: number, phase: 'pending' | 'stalled' }>()
+  let redeployToken = 0
+  const REDEPLOY_POLL_MS = 1000
+  const REDEPLOY_TIMEOUT_MS = 30_000
 
   const focusedRoute = computed(() => routes.value.find(route => route.id === focusedRouteId.value))
   const focusedRouteIndex = computed(() => routes.value.findIndex(route => route.id === focusedRouteId.value))
+
+  const focusedRouteRedeploy = computed(() =>
+    redeploy.value && redeploy.value.identity === focusedRoute.value?.identity ? redeploy.value.phase : undefined)
+
+  const focusedRouteDmpStatus = computed(() => {
+    const status = dmpStatus.value
+    return focusedRoute.value && status?.available && status.managesAimc
+      ? status.routes.get(focusedRoute.value.identity)
+      : undefined
+  })
+
+  /** Why the DMP is not running the focused route as authored, if it is not. */
+  const focusedRouteDmpProblem = computed(() => {
+    const status = focusedRouteDmpStatus.value
+    if (!status) {
+      return ''
+    }
+    if (status.state === 'installed') {
+      return status.outdated ? 'The DMP still runs an older version of this route; the current one is being installed.' : ''
+    }
+    if (status.state === 'not-deployed') {
+      return 'The DMP has no entry for this route yet.'
+    }
+    const prefix = status.state === 'stale'
+      ? 'The DMP keeps running the last good version of this route. '
+      : ''
+    return `${prefix}${describeDmpCategory(status.category) || `DMP state: ${status.state}.`}`
+  })
 
   watch(
     () => props.submodelElementData,
@@ -283,27 +300,57 @@
     },
   )
 
-  onMounted(() => {
-    initializeVisualization()
+  // A later poll (or a manual refresh) that sees the reinstall clears the flag.
+  watch(focusedRouteDmpStatus, status => {
+    if (redeploy.value?.phase === 'stalled' && status && status.generation > redeploy.value.fromGeneration) {
+      redeploy.value = undefined
+    }
   })
 
-  async function initializeVisualization (): Promise<void> {
+  onMounted(() => {
+    initializeVisualization()
+    dmpTimer = setInterval(() => {
+      // Only poll while the tab is visible; the next refresh catches up.
+      if (document.visibilityState === 'visible') {
+        void refreshDmpStatus()
+      }
+    }, DMP_REFRESH_MS)
+  })
+
+  onBeforeUnmount(() => {
+    clearInterval(dmpTimer)
+    // Ends a redeploy follow-up still in flight.
+    redeployToken++
+  })
+
+  /**
+   * Parses and resolves the AIMC.
+   *
+   * @param reload re-read the submodel from the repository instead of using
+   * the copy the host handed in when the page opened — needed after the
+   * editor saved a blob, or the old script would be shown again.
+   */
+  async function initializeVisualization (reload = false): Promise<void> {
     const updateId = ++visualizationUpdateId
     if (!props.submodelElementData || Object.keys(props.submodelElementData).length === 0) {
       return
     }
 
-    isLoading.value = true
+    // A reload after a save runs in the background, so the editor stays
+    // mounted (and in edit mode) instead of giving way to the progress bar.
+    isLoading.value = !reload
     try {
       // `setData` annotates every element with its repository `path`; the
       // editor needs the blob's path in order to persist an edit.
       // It yields an empty object when there is no path to start from.
-      const submodelData = await setData(
-        { ...props.submodelElementData },
-        aasStore.getSelectedNode.path,
-        false,
-        aasStore.getSelectedNode.timestamp,
-      )
+      const submodelData = reload && aasStore.getSelectedNode.path
+        ? await fetchSm(aasStore.getSelectedNode.path, false, true)
+        : await setData(
+          { ...props.submodelElementData },
+          aasStore.getSelectedNode.path,
+          false,
+          aasStore.getSelectedNode.timestamp,
+        )
       if (updateId !== visualizationUpdateId) return
       if (!submodelData || Object.keys(submodelData).length === 0) {
         routes.value = []
@@ -313,8 +360,31 @@
       }
 
       const parsed = parseAimc(submodelData)
-      routes.value = parsed.mappings
-      warnings.value = parsed.warnings
+      aimcId.value = typeof submodelData.id === 'string' ? submodelData.id : ''
+      const references = parsed.mappings.flatMap(route => [
+        ...route.sources.map(endpoint => endpoint.submodelId),
+        ...route.sinks.map(endpoint => endpoint.submodelId),
+        ...route.responseSources.map(endpoint => endpoint.submodelId),
+        ...route.responseSinks.map(endpoint => endpoint.submodelId),
+      ]).filter(Boolean)
+      await Promise.all([...new Set(references)].map(id => {
+        if (!submodelCache.has(id)) {
+          submodelCache.set(id, fetchSmById(id).catch(() => ({})))
+        }
+        return submodelCache.get(id)
+      }))
+      if (updateId !== visualizationUpdateId) return
+      const loadedSubmodels = new Map<string, any>()
+      const fetchedSubmodels = await Promise.all([...new Set(references)].map(async id => [id, await submodelCache.get(id)] as const))
+      for (const [id, loaded] of fetchedSubmodels) {
+        if (loaded && Object.keys(loaded).length > 0) loadedSubmodels.set(id, loaded)
+      }
+      routes.value = parsed.mappings.map(route => resolveAimcMapping(route, loadedSubmodels))
+      void refreshDmpStatus()
+      warnings.value = [
+        ...parsed.warnings,
+        ...routes.value.flatMap(route => (route.warnings ?? []).map(message => `${route.name}: ${message}`)),
+      ]
       // Keep the focused route while it still exists in the submodel.
       if (routes.value.some(route => route.id === focusedRouteId.value)) {
         return
@@ -332,8 +402,62 @@
     }
   }
 
+  /** After a saved edit: show what the repository now holds, and follow the DMP's redeploy. */
   async function refresh (): Promise<void> {
-    await initializeVisualization()
+    const identity = focusedRoute.value?.identity
+    const before = focusedRouteDmpStatus.value
+    await initializeVisualization(true)
+    if (identity && before) {
+      void followRedeploy(identity, before)
+    }
+  }
+
+  /**
+   * Polls the DMP until the saved route is reinstalled — its generation rises —
+   * or its state changes (e.g. to `stale` when the new script does not
+   * compile). Marks the route `stalled` if neither happens in time.
+   */
+  async function followRedeploy (identity: string, before: DmpRouteStatus): Promise<void> {
+    const token = ++redeployToken
+    redeploy.value = { identity, fromGeneration: before.generation, phase: 'pending' }
+    const deadline = Date.now() + REDEPLOY_TIMEOUT_MS
+    while (Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, REDEPLOY_POLL_MS))
+      if (token !== redeployToken) {
+        return
+      }
+      await refreshDmpStatus()
+      const status = dmpStatus.value?.available ? dmpStatus.value.routes.get(identity) : undefined
+      if (status && (status.generation > before.generation || status.state !== before.state || status.category !== before.category)) {
+        redeploy.value = undefined
+        return
+      }
+    }
+    if (token === redeployToken) {
+      redeploy.value = { identity, fromGeneration: before.generation, phase: 'stalled' }
+    }
+  }
+
+  /** Re-reads the DMP's deployment state of this AIMC's routes. */
+  async function refreshDmpStatus (): Promise<void> {
+    if (aimcId.value === '' || routes.value.length === 0 || dmpLoading.value) {
+      return
+    }
+    dmpLoading.value = true
+    try {
+      const basePath = envStore.getEnvBasePath.trim()
+      const prefix = basePath === '' || basePath.includes('PLACEHOLDER') ? '/' : basePath.replace(/\/?$/, '/')
+      dmpStatus.value = await fetchDmpStatus(`${prefix}api/dmp/status`, aimcId.value, routes.value.map(route => route.identity))
+    } finally {
+      dmpLoading.value = false
+    }
+  }
+
+  function focusRouteById (routeId: string): void {
+    const route = routes.value.find(candidate => candidate.id === routeId)
+    if (route) {
+      focusRoute(route)
+    }
   }
 
   function focusRoute (route: AimcMapping): void {
@@ -351,16 +475,6 @@
   function selectDirection (next: 'request' | 'response'): void {
     direction.value = next
     void editor.value?.reveal()
-  }
-
-  function routeSubtitle (route: AimcMapping): string {
-    const sources = route.sources.length === 1
-      ? route.sources[0]!.sourceId || 'source'
-      : `${route.sources.length} sources`
-    const sinks = route.sinks.length === 1
-      ? route.sinks[0]!.sinkId || 'sink'
-      : `${route.sinks.length} sinks`
-    return `${kindLabels[route.kind]} · ${sources} → ${sinks}`
   }
 </script>
 
