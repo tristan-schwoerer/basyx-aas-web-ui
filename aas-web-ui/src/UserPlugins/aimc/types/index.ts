@@ -83,10 +83,12 @@ export interface AimcSink {
 
 export interface AimcResolvedEndpoint {
   kind: AimcEndpointKind
+  operationId?: string
+  operationPath?: string
   affordanceId?: string
   affordancePath?: string
   affordanceName?: string
-  direction?: 'input' | 'output'
+  direction?: 'input' | 'inoutput' | 'output'
   selectedMember?: string
   form?: string
   warning?: string

@@ -18,6 +18,10 @@ function semanticValues (element: any): string[] {
 }
 
 function children (element: any): any[] {
+  if (element?.modelType === 'Operation') {
+    return ['inputVariables', 'outputVariables', 'inoutputVariables']
+      .flatMap(field => (element[field] ?? []).map((variable: any) => variable.value))
+  }
   return Array.isArray(element?.submodelElements)
     ? element.submodelElements
     : (Array.isArray(element?.value) ? element.value : [])
@@ -139,9 +143,28 @@ export function resolveAimcReference (
   })
   const affordanceIndex = groupIndex + 1
   if (groupIndex === -1 || affordanceIndex >= path.length) {
-    const target = path.at(-1)
-    const isOperation = target?.modelType === 'Operation' || keys.at(-1)?.type === 'Operation'
-    return { kind: isOperation ? 'operation' : 'aas-element' }
+    const operationIndex = path.findIndex(element => element?.modelType === 'Operation')
+    if (operationIndex === -1) {
+      return { kind: 'aas-element' }
+    }
+    const operation = path[operationIndex]
+    const member = path[operationIndex + 1]
+    let direction: AimcResolvedEndpoint['direction']
+    if (member) {
+      direction = 'input'
+      if ((operation.outputVariables ?? []).some((variable: any) => variable.value === member)) {
+        direction = 'output'
+      } else if ((operation.inoutputVariables ?? []).some((variable: any) => variable.value === member)) {
+        direction = 'inoutput'
+      }
+    }
+    return {
+      kind: 'operation',
+      operationId: JSON.stringify([submodelId, ...pathKeys.slice(0, operationIndex + 1)]),
+      operationPath: pathKeys.slice(0, operationIndex + 1).join('/'),
+      selectedMember: member ? path.slice(operationIndex + 1).map(element => element.idShort).join('/') : undefined,
+      direction,
+    }
   }
 
   const affordance = path[affordanceIndex]
@@ -160,7 +183,7 @@ export function resolveAimcReference (
 
   return {
     kind: 'affordance',
-    affordanceId: `${submodelId}/${affordanceName}`,
+    affordanceId: JSON.stringify([submodelId, ...path.slice(0, affordanceIndex + 1).map(element => element.idShort)]),
     affordancePath: `${group}/${affordanceName}`,
     affordanceName,
     direction: direction ?? (isAction ? 'input' : undefined),
@@ -194,6 +217,9 @@ export function resolveAimcMapping (mapping: AimcMapping, submodels: Map<string,
     || mapping.responseSinks.length > 0
   const warnings = [
     ...(mapping.warnings ?? []),
+    ...(mapping.response.present && responseSinks.length === 0
+      ? ['ResponseTransformation requires explicit ResponseSinks; no response destination is declared.']
+      : []),
     ...[...sources, ...sinks, ...responseSources, ...responseSinks]
       .flatMap(endpoint => endpoint.resolved?.warning ? [endpoint.resolved.warning] : []),
     ...(hasResponseElements && !delegated

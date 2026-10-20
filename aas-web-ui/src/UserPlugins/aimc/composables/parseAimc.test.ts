@@ -377,6 +377,9 @@ describeFixtures('DMP extensions (projection-extensions)', () => {
     // The Operation sinks into an AAS Property, which the DMP does not compile as a bridge.
     const resolved = resolveAimcMapping(route!, submodels)
     expect(resolved.kind).toBe('data')
-    expect(resolved.warnings).toEqual([expect.stringContaining('only valid on an operation mapping')])
+    expect(resolved.warnings).toEqual([
+      expect.stringContaining('requires explicit ResponseSinks'),
+      expect.stringContaining('only valid on an operation mapping'),
+    ])
   })
 })
