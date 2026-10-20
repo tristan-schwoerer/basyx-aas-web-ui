@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { AIMC_GROUP_PAD_BOTTOM, AIMC_LANE_GAP, AIMC_ROW_GAP, handleShare, layoutAimcGraph } from './layoutAimcGraph'
+import { AIMC_GROUP_PAD_BOTTOM, AIMC_LANE_GAP, AIMC_ROW_GAP, AIMC_SECTION_HEIGHT, handleShare, layoutAimcGraph } from './layoutAimcGraph'
 
 const heights: Record<string, number> = {
   s0: 70,
@@ -74,6 +74,44 @@ describe('handleShare', () => {
 })
 
 describe('layoutAimcGraph (request and reply in one lane)', () => {
+  it('orders In/Outputs between input and output sections regardless of reference order', () => {
+    const { top } = layoutAimcGraph([[[
+      { id: 's0', group: 'operation', section: 'In/Outputs' },
+      { id: 's1', group: 'operation', section: 'Outputs' },
+      { id: 's2', group: 'operation', section: 'Inputs' },
+    ]]], heightOf, () => 30)
+    expect(top.get('s2')!).toBeLessThan(top.get('s0')!)
+    expect(top.get('s0')!).toBeLessThan(top.get('s1')!)
+  })
+
+  it('frames inputs and outputs together with room for distinct section labels', () => {
+    const { top, frames } = layoutAimcGraph([[[
+      { id: 's0', group: 'operation', section: 'Inputs' },
+      { id: 's1', group: 'other', section: 'Inputs' },
+      { id: 's2', group: 'operation', section: 'Outputs', gapBefore: AIMC_LANE_GAP },
+    ]]], heightOf, () => 30)
+    const frame = frames.get('operation')!
+    expect(frames.size).toBe(2)
+    expect(top.get('s0')! - frame.top).toBe(30 + AIMC_SECTION_HEIGHT)
+    expect(top.get('s2')! - top.get('s0')! - heightOf('s0')).toBe(AIMC_ROW_GAP + AIMC_SECTION_HEIGHT,
+      'outputs follow inputs at the row gap')
+    expect(frame.top + frame.height).toBe(top.get('s2')! + heightOf('s2') + AIMC_GROUP_PAD_BOTTOM)
+    expect(top.get('s1')!).toBeGreaterThan(frame.top + frame.height)
+  })
+
+  it('fills a frame with inputs, In/Outputs and outputs at the row gap, a label between sections', () => {
+    const { top } = layoutAimcGraph([[[
+      { id: 'in', group: 'operation', section: 'Inputs' },
+      { id: 'io0', group: 'operation', section: 'In/Outputs' },
+      { id: 'io1', group: 'operation', section: 'In/Outputs' },
+      { id: 'out', group: 'operation', section: 'Outputs', gapBefore: AIMC_LANE_GAP },
+    ]]], heightOf, () => 30)
+    const gap = (above: string, below: string): number => top.get(below)! - top.get(above)! - heightOf(above)
+    expect(gap('in', 'io0')).toBe(AIMC_ROW_GAP + AIMC_SECTION_HEIGHT)
+    expect(gap('io0', 'io1')).toBe(AIMC_ROW_GAP)
+    expect(gap('io1', 'out')).toBe(AIMC_ROW_GAP + AIMC_SECTION_HEIGHT)
+  })
+
   it('centers a source and sink serving both directions between the two transformations', () => {
     const { top, midlines } = layoutAimcGraph(
       [[[{ id: 's0' }], [{ id: 't' }, { id: 'r', gapBefore: AIMC_LANE_GAP }], [{ id: 'k0' }]]],

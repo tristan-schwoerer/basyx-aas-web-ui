@@ -18,8 +18,7 @@
       @node-click="onNodeClick"
       @pane-click="onPaneClick"
     >
-      <!-- One frame per originating affordance: all sources (or sinks) of a
-           route that address the same AID affordance share it. -->
+      <!-- Request and response members share their owning affordance/operation frame. -->
       <template #node-aimcGroup="{ data }">
         <div
           class="aimc-group"
@@ -35,6 +34,16 @@
           </div>
 
           <div v-if="data.form" class="aimc-group__form">{{ data.form }}</div>
+
+          <div
+            v-for="(section, index) in data.sections"
+            :key="section.label"
+            class="aimc-group__section text-caption"
+            :class="{ 'aimc-group__section--first': index === 0 }"
+            :style="{ top: `${section.top}px` }"
+          >
+            {{ section.label }}
+          </div>
         </div>
       </template>
 
@@ -102,19 +111,7 @@
       </template>
 
       <template #node-aimcResponseEndpoint="{ data }">
-        <div class="aimc-node aimc-node--response-endpoint">
-          <Handle
-            :position="data.side === 'source' ? Position.Left : Position.Right"
-            :type="data.side === 'source' ? 'source' : 'target'"
-          />
-
-          <div class="aimc-node__header">
-            <v-icon density="compact" size="small">{{ data.side === 'source' ? 'mdi-download' : 'mdi-upload' }}</v-icon>
-            <span class="text-body-2 font-weight-bold">{{ data.label }}</span>
-          </div>
-
-          <div class="aimc-node__path">{{ data.member || data.affordance || 'response endpoint' }}</div>
-        </div>
+        <AimcEndpointNode :data="data" :expanded="isExpanded(data)" />
       </template>
 
       <Background :gap="16" pattern-color="currentColor" />
@@ -125,7 +122,7 @@
 
 <script lang="ts" setup>
   import type { AimcLayoutItem, AimcLayoutLane } from '../composables/layoutAimcGraph'
-  import type { AimcMapping } from '../types'
+  import type { AimcMapping, AimcResponseEndpoint } from '../types'
   import type { AimcEndpointNodeData } from './AimcEndpointNode.vue'
   /**
    * Renders one AIMC route: sources on the left, the Lua transformation(s) in
@@ -151,6 +148,7 @@
   import { Handle, MarkerType, Position, useVueFlow, VueFlow } from '@vue-flow/core'
   import {
     AIMC_LANE_GAP,
+    AIMC_SECTION_HEIGHT,
     handleShare,
     layoutAimcGraph,
   } from '../composables/layoutAimcGraph'
@@ -311,21 +309,22 @@
 
   /** The frame an endpoint belongs to: the AID affordance it addresses. */
   function endpointGroup (
-    endpoint: AimcMapping['sources'][number] | AimcMapping['sinks'][number],
+    endpoint: AimcMapping['sources'][number] | AimcMapping['sinks'][number] | AimcResponseEndpoint,
     side: 'source' | 'sink',
   ): Omit<EndpointGroup, 'members'> | undefined {
     const resolved = endpoint.resolved
-    if (!resolved?.affordanceId || !resolved.affordancePath) {
+    const identity = resolved?.affordanceId ?? resolved?.operationId
+    const label = resolved?.affordancePath ?? resolved?.operationPath
+    if (!identity || !label) {
       return undefined
     }
-    const direction = resolved.direction ? ` · ${resolved.direction}` : ''
     // The interface is on every member as its protocol chip; the frame names
     // the affordance, which would otherwise be what gets cut off.
     return {
-      key: `${side}::${resolved.affordanceId}`,
-      label: `${resolved.affordancePath}${direction}`,
+      key: `${side}::${identity}`,
+      label,
       side,
-      form: resolved.form,
+      form: resolved?.form,
     }
   }
 
@@ -361,7 +360,7 @@
     // the path only partially drawn after a prev/next switch.
     const requestNodeId = `${mapping.id}-request`
     const responseNodeId = `${mapping.id}-response`
-    const hasExplicitReply = mapping.responseSources.length > 0 || mapping.responseSinks.length > 0
+    const hasExplicitReply = mapping.response.present || mapping.responseSources.length > 0 || mapping.responseSinks.length > 0
     const isOperation = mapping.kind === 'delegated-action'
     const operationIndex = mapping.sources.findIndex(source => source.resolved?.kind === 'operation')
     // An operation always answers its caller. Without a ResponseTransformation
@@ -376,7 +375,7 @@
     const replyRight: AimcLayoutItem[] = []
 
     const groupOf = (
-      endpoint: AimcMapping['sources'][number] | AimcMapping['sinks'][number],
+      endpoint: AimcMapping['sources'][number] | AimcMapping['sinks'][number] | AimcResponseEndpoint,
       side: 'source' | 'sink',
     ): string | undefined => {
       const group = endpointGroup(endpoint, side)
@@ -390,6 +389,15 @@
         groups.set(group.key, { ...group, members: 1 })
       }
       return group.key
+    }
+
+    const sectionOf = (endpoint: { resolved?: AimcResponseEndpoint['resolved'] }, reply = false): AimcLayoutItem['section'] => {
+      if (endpoint.resolved?.direction === 'inoutput') {
+        return 'In/Outputs'
+      }
+      return endpoint.resolved?.kind === 'operation' || endpoint.resolved?.affordancePath?.startsWith('actions/')
+        ? (reply ? 'Outputs' : 'Inputs')
+        : undefined
     }
 
     const pushNode = (id: string, type: string, x: number, data: Record<string, unknown>): void => {
@@ -416,7 +424,7 @@
     for (const [index, source] of mapping.sources.entries()) {
       const id = `${mapping.id}-source-${index}`
       const delivery = sourceDelivery(source, mapping.defaultPollingInterval)
-      sourceColumn.push({ id, group: groupOf(source, 'source') })
+      sourceColumn.push({ id, group: groupOf(source, 'source'), section: sectionOf(source) })
       pushNode(id, 'aimcSource', SOURCE_X, {
         nodeId: id,
         role: 'source',
@@ -452,7 +460,7 @@
 
     for (const [index, sink] of mapping.sinks.entries()) {
       const id = `${mapping.id}-sink-${index}`
-      sinkColumn.push({ id, group: groupOf(sink, 'sink') })
+      sinkColumn.push({ id, group: groupOf(sink, 'sink'), section: sectionOf(sink) })
       pushNode(id, 'aimcSink', SINK_X, {
         nodeId: id,
         role: 'sink',
@@ -488,54 +496,69 @@
     if (hasExplicitReply) {
       for (const [index, endpoint] of mapping.responseSources.entries()) {
         const id = `${mapping.id}-response-source-${index}`
-        replyRight.push({ id })
+        replyRight.push({ id, group: groupOf(endpoint, 'sink'), section: sectionOf(endpoint, true) })
         pushNode(id, 'aimcResponseEndpoint', SINK_X, {
-          side: 'source',
+          nodeId: id,
+          role: 'sink',
           label: endpoint.id || `response source ${index + 1}`,
-          affordance: endpoint.resolved?.affordancePath,
-          member: endpoint.resolved?.selectedMember,
-        })
-        replyEdge(`${id}-to-response`, { source: id, target: responseNodeId, targetHandle: null, label: endpoint.id })
+          kind: endpoint.resolved?.kind ?? 'unknown',
+          deliveryKind: 'response',
+          badges: [{ text: 'response source' }],
+          member: endpoint.resolved?.selectedMember ?? endpoint.refPath,
+          keys: endpoint.keys,
+          handles: ['reply'],
+        } satisfies AimcEndpointNodeData)
+        replyEdge(`${id}-to-response`, { source: id, sourceHandle: 'reply', target: responseNodeId, targetHandle: null, label: endpoint.id })
       }
 
       if (mapping.responseSources.length === 0 && operationIndex !== -1) {
-        const id = `${mapping.id}-implicit-response-source`
-        replyRight.push({ id })
-        pushNode(id, 'aimcResponseEndpoint', SINK_X, {
-          side: 'source',
-          label: mapping.sources[operationIndex]!.sourceId,
-          member: 'whole device reply',
-        })
-        replyEdge(`${id}-to-response`, { source: id, target: responseNodeId, targetHandle: null })
+        for (const [index, sink] of mapping.sinks.entries()) {
+          if (sink.kind === 'affordance') {
+            const id = `${mapping.id}-sink-${index}`
+            replyEdge(`${id}-to-response`, { source: id, sourceHandle: 'reply', target: responseNodeId, targetHandle: null })
+          }
+        }
       }
 
       for (const [index, endpoint] of mapping.responseSinks.entries()) {
+        // An InOut variable is one endpoint, used in both directions. Keep its
+        // two handles on the same node instead of duplicating the variable.
+        const sharedIndex = endpoint.resolved?.direction === 'inoutput'
+          ? mapping.sources.findIndex(source => source.resolved?.direction === 'inoutput'
+            && source.resolved.operationId === endpoint.resolved?.operationId
+            && source.resolved.selectedMember === endpoint.resolved?.selectedMember)
+          : -1
+        if (sharedIndex !== -1) {
+          replyEdge(`${responseNodeId}-to-inoutput-${index}`, {
+            source: responseNodeId,
+            target: `${mapping.id}-source-${sharedIndex}`,
+            sourceHandle: null,
+            targetHandle: 'reply',
+            label: endpoint.id,
+          })
+          continue
+        }
         const id = `${mapping.id}-response-sink-${index}`
-        replyLeft.push({ id })
+        replyLeft.push({ id, group: groupOf(endpoint, 'source'), section: sectionOf(endpoint, true) })
         pushNode(id, 'aimcResponseEndpoint', SOURCE_X, {
-          side: 'sink',
+          nodeId: id,
+          role: 'source',
           label: endpoint.id || `response sink ${index + 1}`,
-          affordance: endpoint.resolved?.affordancePath,
-          member: endpoint.resolved?.selectedMember,
-        })
-        replyEdge(`${responseNodeId}-to-${id}`, { source: responseNodeId, target: id, sourceHandle: null, label: endpoint.id })
-      }
-
-      if (operationIndex !== -1 && !mapping.responseSinks.some(endpoint => endpoint.resolved?.kind === 'operation')) {
-        replyEdge(`${mapping.id}-response-to-caller`, {
-          source: responseNodeId,
-          target: `${mapping.id}-source-${operationIndex}`,
-          sourceHandle: null,
-          targetHandle: 'reply',
-          label: 'caller reply',
-        })
+          kind: endpoint.resolved?.kind ?? 'unknown',
+          deliveryKind: 'response',
+          badges: [{ text: 'response sink' }],
+          member: endpoint.resolved?.selectedMember ?? endpoint.resolved?.operationPath ?? endpoint.refPath,
+          keys: endpoint.keys,
+          handles: ['reply'],
+        } satisfies AimcEndpointNodeData)
+        replyEdge(`${responseNodeId}-to-${id}`, { source: responseNodeId, target: id, targetHandle: 'reply', sourceHandle: null, label: endpoint.id })
       }
     }
 
     // Each source and sink draws only the points its edges use, request first.
     const endpointHandles = new Map<string, Array<'forward' | 'reply'>>()
     for (const node of nextNodes) {
-      if (node.type === 'aimcSource' || node.type === 'aimcSink') {
+      if (['aimcSource', 'aimcSink', 'aimcResponseEndpoint'].includes(node.type ?? '')) {
         const used = (['forward', 'reply'] as const).filter(handle => nextEdges.some(edge =>
           (edge.source === node.id && edge.sourceHandle === handle) || (edge.target === node.id && edge.targetHandle === handle)))
         endpointHandles.set(node.id, used)
@@ -585,16 +608,22 @@
     // and sink that serve both directions sit level with the middle of the
     // Transformation / ResponseTransformation pair. The reply part of each
     // column follows its request part after the lane gap.
-    const replyPart = (items: AimcLayoutItem[]): AimcLayoutItem[] =>
-      items.map((item, index) => (index === 0 ? { ...item, gapBefore: AIMC_LANE_GAP } : item))
+    // A reply member that shares a request frame fills that frame's output
+    // section; the first one that starts a frame of its own is set apart by
+    // the lane gap.
+    const replyPart = (request: AimcLayoutItem[], items: AimcLayoutItem[]): AimcLayoutItem[] => {
+      const requestGroups = new Set(request.map(item => item.group).filter(Boolean))
+      const own = items.findIndex(item => !item.group || !requestGroups.has(item.group))
+      return items.map((item, index) => (index === own ? { ...item, gapBefore: AIMC_LANE_GAP } : item))
+    }
     const middle: AimcLayoutItem[] = [{ id: requestNodeId }]
     if (hasResponseNode) {
       middle.push({ id: responseNodeId, gapBefore: AIMC_LANE_GAP })
     }
     const lanes: AimcLayoutLane[] = [[
-      [...sourceColumn, ...replyPart(replyLeft)],
+      [...sourceColumn, ...replyPart(sourceColumn, replyLeft)],
       middle,
-      [...sinkColumn, ...replyPart(replyRight)],
+      [...sinkColumn, ...replyPart(sinkColumn, replyRight)],
     ]]
     return { nodes: nextNodes, edges: nextEdges, lanes, groups, endpointHandles }
   }
@@ -685,9 +714,16 @@
       if (node.type === 'aimcGroup') {
         const frame = layout.frames.get(node.data.groupKey)
         if (frame) {
+          const sections = new Map<string, number>()
+          for (const item of graph.lanes.flatMap(lane => lane.flat())) {
+            if (item.group === node.data.groupKey && item.section && !sections.has(item.section)) {
+              sections.set(item.section, layout.top.get(item.id)! - frame.top - AIMC_SECTION_HEIGHT)
+            }
+          }
           updateNode(node.id, {
             position: { x: node.position.x, y: frame.top },
             style: { width: `${NODE_WIDTH + 2 * GROUP_PAD_X}px`, height: `${frame.height}px` },
+            data: { ...node.data, sections: [...sections].map(([label, top]) => ({ label, top })).toSorted((a, b) => a.top - b.top) },
           })
         }
         continue
@@ -861,6 +897,20 @@
     opacity: 0.72;
   }
 
+  .aimc-group__section {
+    position: absolute;
+    left: 12px;
+    right: 12px;
+    border-top: 1px solid rgba(128, 128, 128, 0.28);
+    padding-top: 2px;
+    opacity: 0.75;
+  }
+
+  /* Separation lines go between sections only. */
+  .aimc-group__section--first {
+    border-top: none;
+  }
+
   .aimc-node {
     border-radius: 14px;
     border: 1px solid rgba(128, 128, 128, 0.5);
@@ -874,7 +924,6 @@
     box-shadow: 0 0 0 1px rgb(var(--v-theme-primary));
   }
 
-  .aimc-node--response-endpoint,
   .aimc-node--response {
     border-style: dashed;
     border-color: rgb(var(--v-theme-secondary));

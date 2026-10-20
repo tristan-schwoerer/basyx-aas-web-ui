@@ -17,6 +17,7 @@
 export interface AimcLayoutItem {
   id: string
   group?: string
+  section?: 'Inputs' | 'In/Outputs' | 'Outputs'
   /** Space above this node, instead of the row gap; e.g. where a column's reply part begins. */
   gapBefore?: number
 }
@@ -41,6 +42,8 @@ export const AIMC_ROW_GAP = 24
 export const AIMC_LANE_GAP = 56
 /** Space below the last node of a group frame. */
 export const AIMC_GROUP_PAD_BOTTOM = 14
+/** Room for the input/output label and separator inside a frame. */
+export const AIMC_SECTION_HEIGHT = 26
 
 interface StackedColumn {
   /** Node tops relative to the column's node-extent center. */
@@ -54,6 +57,7 @@ interface StackedColumn {
 /**
  * Keeps the members of a group contiguous (in order of first appearance), so
  * a group is drawn as one frame instead of being split by other endpoints.
+ * Inside each frame, InOut variables sit between inputs and outputs.
  */
 function contiguousByGroup (items: AimcLayoutItem[]): AimcLayoutItem[] {
   const buckets = new Map<string, AimcLayoutItem[]>()
@@ -66,7 +70,9 @@ function contiguousByGroup (items: AimcLayoutItem[]): AimcLayoutItem[] {
       buckets.set(key, [item])
     }
   }
-  return [...buckets.values()].flat()
+  const sectionRank = { 'Inputs': 0, 'In/Outputs': 1, 'Outputs': 2 }
+  return [...buckets.values()].flatMap(bucket => bucket.toSorted((a, b) =>
+    (sectionRank[a.section ?? 'Inputs']) - (sectionRank[b.section ?? 'Inputs'])))
 }
 
 function stackColumn (
@@ -79,10 +85,13 @@ function stackColumn (
   let cursor = 0
   let firstTop = 0
   let previousGroup: string | undefined
+  let previousSection: AimcLayoutItem['section']
 
   for (const [index, item] of contiguousByGroup(items).entries()) {
     if (index > 0) {
-      cursor += item.gapBefore ?? AIMC_ROW_GAP
+      // A frame fills section by section at the row gap; gaps only separate frames.
+      const insideFrame = item.group !== undefined && item.group === previousGroup
+      cursor += insideFrame ? AIMC_ROW_GAP : (item.gapBefore ?? AIMC_ROW_GAP)
       if (previousGroup !== undefined && item.group !== previousGroup) {
         cursor += AIMC_GROUP_PAD_BOTTOM
       }
@@ -91,6 +100,9 @@ function stackColumn (
       const padTop = groupPadTop(item.group)
       frames.set(item.group, { top: cursor, bottom: cursor })
       cursor += padTop
+    }
+    if (item.group && item.section && (item.group !== previousGroup || item.section !== previousSection)) {
+      cursor += AIMC_SECTION_HEIGHT
     }
     if (index === 0) {
       firstTop = cursor
@@ -101,6 +113,7 @@ function stackColumn (
       frames.get(item.group)!.bottom = cursor + AIMC_GROUP_PAD_BOTTOM
     }
     previousGroup = item.group
+    previousSection = item.section
   }
 
   // Center on the nodes themselves, not on their frames: a frame's label strip

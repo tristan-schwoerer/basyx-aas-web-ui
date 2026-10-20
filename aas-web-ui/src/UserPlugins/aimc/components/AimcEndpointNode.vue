@@ -132,6 +132,11 @@
     border-left: 3px solid rgb(var(--v-theme-success));
   }
 
+  .aimc-node--response {
+    border-style: dashed;
+    border-color: rgb(var(--v-theme-secondary));
+  }
+
   /* Input and output connection points, split vertically on the flow side. */
   .aimc-handle {
     border: 2px solid rgb(var(--v-theme-surface));
