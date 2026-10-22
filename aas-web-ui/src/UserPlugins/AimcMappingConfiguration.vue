@@ -119,10 +119,16 @@
           variant="tonal"
         >
           <span class="text-body-small">{{ focusedRouteDmpProblem }}</span>
+          <div v-if="focusedRouteDmpCause" class="text-body-small mt-1">{{ focusedRouteDmpCause }}</div>
+
+          <ul v-if="focusedRouteDmpReasons.length > 0" class="text-body-small mt-1 pl-4">
+            <li v-for="reason in focusedRouteDmpReasons" :key="reason">{{ reason }}</li>
+          </ul>
         </v-alert>
 
         <AimcMappingGraph
           class="mb-3"
+          :diagnostics="focusedRouteDmpDetails?.diagnostics"
           :direction="direction"
           :mapping="focusedRoute"
           @select-direction="selectDirection"
@@ -202,7 +208,7 @@
    * dispatch a plugin on the AIMC submodel, never on an individual route. The
    * whole submodel is never rendered as a single flow — only the focused route.
    */
-  import type { DmpRouteStatus, DmpStatus } from './aimc/composables/dmpStatus'
+  import type { DmpRouteDetails, DmpRouteStatus, DmpStatus } from './aimc/composables/dmpStatus'
   import type { AimcMapping } from './aimc/types'
   import { useSMHandling } from '@/composables/AAS/SMHandling'
   import { useAASStore } from '@/store/AASDataStore'
@@ -212,7 +218,7 @@
   import AimcMappingGraph from './aimc/components/AimcMappingGraph.vue'
   import AimcRouteIndex from './aimc/components/AimcRouteIndex.vue'
   import AimcTransformationEditor from './aimc/components/AimcTransformationEditor.vue'
-  import { describeDmpCategory, fetchDmpStatus } from './aimc/composables/dmpStatus'
+  import { describeDmpCategory, describeDmpCause, diagnosticEndpoint, fetchDmpMappings, fetchDmpStatus } from './aimc/composables/dmpStatus'
   import { parseAimc } from './aimc/composables/parseAimc'
   import { resolveAimcMapping } from './aimc/composables/resolveAimc'
   import { kindLabels } from './aimc/composables/routeLabels'
@@ -249,6 +255,8 @@
   const submodelCache = new Map<string, Promise<any>>()
   // The DMP's deployment state of each route; `undefined` while the feature is off.
   const dmpStatus = ref<DmpStatus>()
+  /** Why each route does or does not run, by identity; fetched only while a route has a problem. */
+  const dmpDetails = ref<Map<string, DmpRouteDetails>>()
   const dmpLoading = ref(false)
   const aimcId = ref('')
   let dmpTimer: ReturnType<typeof setInterval> | undefined
@@ -273,6 +281,25 @@
     return focusedRoute.value && status?.available && status.managesAimc
       ? status.routes.get(focusedRoute.value.identity)
       : undefined
+  })
+
+  const focusedRouteDmpDetails = computed(() =>
+    focusedRoute.value ? dmpDetails.value?.get(focusedRoute.value.identity) : undefined)
+
+  const focusedRouteDmpCause = computed(() => describeDmpCause(focusedRouteDmpDetails.value?.cause ?? ''))
+
+  /**
+   * The DMP's diagnostics of the focused route that concern the route as a
+   * whole; those of an endpoint are shown on its node, and counted here.
+   */
+  const focusedRouteDmpReasons = computed(() => {
+    const diagnostics = focusedRouteDmpDetails.value?.diagnostics ?? []
+    const general = diagnostics.filter(diagnostic => !diagnosticEndpoint(diagnostic.path))
+      .map(diagnostic => diagnostic.path === '' ? diagnostic.message : `${diagnostic.path}: ${diagnostic.message}`)
+    const onEndpoints = diagnostics.length - general.length
+    return onEndpoints > 0
+      ? [...general, `${onEndpoints} more on the marked ${onEndpoints === 1 ? 'endpoint' : 'endpoints'} below.`]
+      : general
   })
 
   /** Why the DMP is not running the focused route as authored, if it is not. */
@@ -447,7 +474,10 @@
     try {
       const basePath = envStore.getEnvBasePath.trim()
       const prefix = basePath === '' || basePath.includes('PLACEHOLDER') ? '/' : basePath.replace(/\/?$/, '/')
-      dmpStatus.value = await fetchDmpStatus(`${prefix}api/dmp/status`, aimcId.value, routes.value.map(route => route.identity))
+      const status = await fetchDmpStatus(`${prefix}api/dmp/status`, aimcId.value, routes.value.map(route => route.identity))
+      dmpStatus.value = status
+      const troubled = status?.available && [...status.routes.values()].some(route => route.state !== 'installed' || route.outdated)
+      dmpDetails.value = troubled ? await fetchDmpMappings(`${prefix}api/dmp/mappings`, aimcId.value) : undefined
     } finally {
       dmpLoading.value = false
     }

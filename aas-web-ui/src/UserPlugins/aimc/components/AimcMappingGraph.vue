@@ -121,6 +121,7 @@
 </template>
 
 <script lang="ts" setup>
+  import type { DmpDiagnostic, DmpEndpointCollection } from '../composables/dmpStatus'
   import type { AimcLayoutItem, AimcLayoutLane } from '../composables/layoutAimcGraph'
   import type { AimcMapping, AimcResponseEndpoint } from '../types'
   import type { AimcEndpointNodeData } from './AimcEndpointNode.vue'
@@ -146,6 +147,7 @@
   import { Background } from '@vue-flow/background'
   import { Controls } from '@vue-flow/controls'
   import { Handle, MarkerType, Position, useVueFlow, VueFlow } from '@vue-flow/core'
+  import { diagnosticsAt } from '../composables/dmpStatus'
   import {
     AIMC_LANE_GAP,
     AIMC_SECTION_HEIGHT,
@@ -161,7 +163,13 @@
     mapping: AimcMapping
     /** Which transformation the editor is currently showing. */
     direction: 'request' | 'response'
+    /** The DMP's reasons this route does not run; each is shown on its endpoint. */
+    diagnostics?: DmpDiagnostic[]
   }>()
+
+  function problemsAt (collection: DmpEndpointCollection, index: number): string[] {
+    return diagnosticsAt(props.diagnostics ?? [], collection, index)
+  }
 
   const emit = defineEmits<{
     'select-direction': [direction: 'request' | 'response']
@@ -216,7 +224,7 @@
   const { fitView, findNode, updateNode, updateNodeInternals } = useVueFlow()
 
   watch(
-    () => props.mapping,
+    () => [props.mapping, props.diagnostics],
     async () => {
       await applyRoute(props.mapping)
     },
@@ -434,6 +442,7 @@
         badges: sourceBadges(mapping, source),
         member: source.resolved?.selectedMember,
         keys: source.keys,
+        problems: problemsAt('Sources', index),
         handles: [],
       } satisfies AimcEndpointNodeData)
       nextEdges.push({
@@ -470,6 +479,7 @@
         badges: sinkBadges(sink),
         member: sink.resolved?.selectedMember,
         keys: sink.keys,
+        problems: problemsAt('Sinks', index),
         handles: [],
       } satisfies AimcEndpointNodeData)
       nextEdges.push({
@@ -506,6 +516,7 @@
           badges: [{ text: 'response source' }],
           member: endpoint.resolved?.selectedMember ?? endpoint.refPath,
           keys: endpoint.keys,
+          problems: problemsAt('ResponseSources', index),
           handles: ['reply'],
         } satisfies AimcEndpointNodeData)
         replyEdge(`${id}-to-response`, { source: id, sourceHandle: 'reply', target: responseNodeId, targetHandle: null, label: endpoint.id })
@@ -549,6 +560,7 @@
           badges: [{ text: 'response sink' }],
           member: endpoint.resolved?.selectedMember ?? endpoint.resolved?.operationPath ?? endpoint.refPath,
           keys: endpoint.keys,
+          problems: problemsAt('ResponseSinks', index),
           handles: ['reply'],
         } satisfies AimcEndpointNodeData)
         replyEdge(`${responseNodeId}-to-${id}`, { source: responseNodeId, target: id, targetHandle: 'reply', sourceHandle: null, label: endpoint.id })

@@ -6,7 +6,9 @@
  * identifies mappings there only by SHA-256 tokens of the AIMC submodel id and
  * the mapping identity — the list item's idShort, or `mapping_<index>` — so
  * the tokens are recomputed here and matched. It reports a state and a short
- * category per mapping, not the full compile message.
+ * category per mapping, not the full compile message: that comes from
+ * `GET /management/mappings?aimc=<id>` (`<base>/api/dmp/mappings`), see
+ * {@link fetchDmpMappings}.
  */
 import { sha256Hex } from './sha256'
 
@@ -150,6 +152,7 @@ export function describeDmpCategory (category: string): string {
     'invalid-desired-mapping': 'Not compiled: the route is not a valid DMP mapping (structure, references or Lua).',
     'unsupported-connector-capability': 'Not compiled: the route is valid AIMC, but the DMP has no connector for it (binding, protocol or response elements it does not support).',
     'rest-path-conflict': 'Not compiled: another route already serves the same Operation invocation path.',
+    'timeseries-type-conflict': 'Not compiled: another route writes or reads the same InfluxDB field as a different type.',
     'bundle-installation-failed': 'Compiled, but starting its routes failed; the DMP retries.',
     'bundle-removal-failed': 'The previous version could not be stopped; the DMP retries.',
     'mapping-capacity-exceeded': 'The DMP has reached its mapping limit (DMP_MANAGED_MAX_MAPPINGS).',
@@ -195,4 +198,95 @@ export function describeDmpHealth (status: DmpStatus): DmpHealth {
   return problems === 0
     ? { text: `live · ${routes.length} running`, color: 'success', icon: 'mdi-transit-connection-variant', detail: 'The DMP is ready; every route of this AIMC is compiled and running.' }
     : { text: `live · ${problems} of ${routes.length} not running`, color: 'warning', icon: 'mdi-transit-connection-variant', detail: 'The DMP is ready, but some routes are not running as authored; hover a route\'s chip for the reason.' }
+}
+
+/** One reason a route does not run as authored, at its path within the route (`Sinks/value/1`, or empty). */
+export interface DmpDiagnostic {
+  path: string
+  message: string
+}
+
+/** Why the DMP runs a route, or not: the named view of `/management/mappings`. */
+export interface DmpRouteDetails {
+  state: string
+  category: string
+  /** Why a compiled route failed to install, from a fixed set; empty otherwise. */
+  cause: string
+  diagnostics: DmpDiagnostic[]
+}
+
+interface MappingsPayload {
+  mappings?: Array<{
+    identity?: string
+    state?: string
+    category?: string
+    cause?: string
+    diagnostics?: Array<{ path?: string, message?: string }>
+  }>
+}
+
+/** Reads the details of one AIMC's routes by identity; `undefined` when the Web UI or the DMP does not serve them. */
+export async function fetchDmpMappings (url: string, aimcId: string): Promise<Map<string, DmpRouteDetails> | undefined> {
+  try {
+    const response = await fetch(`${url}?aimc=${encodeURIComponent(aimcId)}`,
+      { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(8000) })
+    if (!response.ok) {
+      return undefined
+    }
+    return parseDmpMappings(await response.json())
+  } catch {
+    return undefined
+  }
+}
+
+/** Pure, so it is unit tested. */
+export function parseDmpMappings (payload: MappingsPayload): Map<string, DmpRouteDetails> {
+  const details = new Map<string, DmpRouteDetails>()
+  for (const entry of payload.mappings ?? []) {
+    if (!entry.identity) {
+      continue
+    }
+    details.set(entry.identity, {
+      state: entry.state ?? '',
+      category: entry.category ?? '',
+      cause: entry.cause ?? '',
+      diagnostics: (entry.diagnostics ?? []).map(diagnostic => ({ path: diagnostic.path ?? '', message: diagnostic.message ?? '' })),
+    })
+  }
+  return details
+}
+
+export type DmpEndpointCollection = 'Sources' | 'Sinks' | 'ResponseSources' | 'ResponseSinks'
+
+const ENDPOINT_PATH = /^(Sources|Sinks|ResponseSources|ResponseSinks)\/value\/(\d+)(?:\/(.*))?$/
+
+/** The endpoint a diagnostic concerns, and the path below it; `undefined` for one about the whole route. */
+export function diagnosticEndpoint (path: string): { collection: DmpEndpointCollection, index: number, below: string } | undefined {
+  const match = ENDPOINT_PATH.exec(path)
+  return match ? { collection: match[1] as DmpEndpointCollection, index: Number(match[2]), below: match[3] ?? '' } : undefined
+}
+
+/** The messages about one endpoint, each prefixed with the path below it (`forms/mqv_qos: …`). */
+export function diagnosticsAt (diagnostics: DmpDiagnostic[], collection: DmpEndpointCollection, index: number): string[] {
+  return diagnostics.flatMap(diagnostic => {
+    const endpoint = diagnosticEndpoint(diagnostic.path)
+    if (!endpoint || endpoint.collection !== collection || endpoint.index !== index) {
+      return []
+    }
+    return [endpoint.below === '' ? diagnostic.message : `${endpoint.below}: ${diagnostic.message}`]
+  })
+}
+
+/** A plain-language reading of an installation cause. */
+export function describeDmpCause (cause: string): string {
+  const causes: Record<string, string> = {
+    'multiple-consumers-unsupported': 'An endpoint of this route does not allow a second consumer, and another route already consumes it.',
+    'unknown-host': 'The host of an endpoint could not be resolved.',
+    'connection-refused': 'An endpoint refused the connection.',
+    'timeout': 'An endpoint did not answer in time.',
+    'authentication-failed': 'An endpoint rejected the credentials.',
+    'endpoint-invalid': 'The DMP could not create an endpoint from the route (an invalid URI or option).',
+    'unknown': 'The cause is not one the DMP recognises; the DMP log has the details.',
+  }
+  return cause === '' ? '' : causes[cause] ?? cause
 }

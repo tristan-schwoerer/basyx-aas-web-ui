@@ -3,7 +3,7 @@
     class="aimc-node aimc-node--endpoint"
     :class="[
       `aimc-node--${data.deliveryKind}`,
-      { 'aimc-node--expanded': expanded },
+      { 'aimc-node--expanded': expanded, 'aimc-node--problem': (data.problems ?? []).length > 0 },
     ]"
   >
     <!-- Every edge meets this node on the transformation side (the request
@@ -41,6 +41,10 @@
 
     <div v-if="data.member" class="aimc-node__path">{{ data.member }}</div>
 
+    <ul v-if="data.problems?.length" class="aimc-node__problems text-error">
+      <li v-for="problem in data.problems" :key="problem">{{ problem }}</li>
+    </ul>
+
     <div v-if="expanded" class="aimc-node__detail">
       <div class="aimc-node__detail-label">reference</div>
 
@@ -76,6 +80,8 @@
     badges: Array<{ text: string, color?: string }>
     member?: string
     keys: AimcReferenceKey[]
+    /** Why the DMP does not run this endpoint as authored (its diagnostics). */
+    problems?: string[]
     /** The connected points, top to bottom: the request (`forward`) and/or the `reply`. */
     handles: Array<'forward' | 'reply'>
   }
@@ -130,6 +136,17 @@
 
   .aimc-node--pushed {
     border-left: 3px solid rgb(var(--v-theme-success));
+  }
+
+  .aimc-node--problem {
+    border-color: rgb(var(--v-theme-error));
+  }
+
+  .aimc-node__problems {
+    margin: 4px 0 0;
+    padding-left: 16px;
+    font-size: 0.75rem;
+    overflow-wrap: anywhere;
   }
 
   .aimc-node--response {

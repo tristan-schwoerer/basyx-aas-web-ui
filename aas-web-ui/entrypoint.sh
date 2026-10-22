@@ -66,9 +66,13 @@ export BASE_PATH_NGINX_PREFIX
 export CX_EDC_BFF_UPSTREAM_URL
 export CX_EDC_BFF_PORT
 export DMP_STATUS_URL
+# The per-AIMC details live beside the status: .../management/status -> .../management/mappings.
+DMP_MAPPINGS_URL=""
+[ -n "$DMP_STATUS_URL" ] && DMP_MAPPINGS_URL="${DMP_STATUS_URL%/status}/mappings"
+export DMP_MAPPINGS_URL
 export INFLUXDB_PROXY_ORIGIN
 export INFLUXDB_PROXY_TOKEN
-envsubst '${BASE_PATH_NGINX_PREFIX} ${CX_EDC_BFF_UPSTREAM_URL} ${DMP_STATUS_URL} ${INFLUXDB_PROXY_ORIGIN} ${INFLUXDB_PROXY_TOKEN}' < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf
+envsubst '${BASE_PATH_NGINX_PREFIX} ${CX_EDC_BFF_UPSTREAM_URL} ${DMP_STATUS_URL} ${DMP_MAPPINGS_URL} ${INFLUXDB_PROXY_ORIGIN} ${INFLUXDB_PROXY_TOKEN}' < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf
 
 # Add a trailing slash to BASE_PATH for the replacement in files
 BASE_PATH_WITH_SLASH=$(echo "$BASE_PATH" | sed 's|/*$|/|')
@@ -204,6 +208,7 @@ printf "%-38s %s\n" "Company Lookup Domain:" "$COMPANY_LOOKUP_DOMAIN"
 printf "%-38s %s\n" "Integrated Catena-X EDC BFF:" "$CX_EDC_BFF_ENABLED"
 printf "%-38s %s\n" "Catena-X EDC BFF upstream:" "$CX_EDC_BFF_UPSTREAM_URL"
 printf "%-38s %s\n" "DMP status upstream:" "${DMP_STATUS_URL:-(disabled)}"
+printf "%-38s %s\n" "DMP mapping details upstream:" "${DMP_MAPPINGS_URL:-(disabled)}"
 printf "%-38s %s\n" "InfluxDB query proxy:" "${INFLUXDB_PROXY_ORIGIN:-(disabled)}"
 echo "-------------------------------------------------------------------------------------------------------------------------"
 

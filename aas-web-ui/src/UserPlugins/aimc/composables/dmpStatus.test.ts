@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import { describeDmpCategory, describeDmpHealth, dmpMappingIdentity, matchDmpStatus } from './dmpStatus'
+import { describeDmpCategory, describeDmpCause, describeDmpHealth, diagnosticEndpoint, diagnosticsAt, dmpMappingIdentity, matchDmpStatus, parseDmpMappings } from './dmpStatus'
 import { sha256Hex } from './sha256'
 
 const token = (value: string): string => createHash('sha256').update(value, 'utf8').digest('hex')
@@ -116,5 +116,37 @@ describe('describeDmpHealth', () => {
 
     const elsewhere = matchDmpStatus({ state: 'ready', ready: true, mappings: [] }, aimcId, ['mapping_0'])
     expect(describeDmpHealth(elsewhere).text).toBe('live, not managing this AIMC')
+  })
+})
+
+describe('DMP mapping details', () => {
+  const details = parseDmpMappings({ mappings: [
+    { identity: 'History', state: 'blocked', category: 'unsupported-connector-capability', cause: '', diagnostics: [
+      { path: 'Sinks/value/1', message: 'TimeSeries segments need a configured InfluxDB' },
+      { path: 'Sources/value/0/forms/mqv_qos', message: 'MQTT QoS must be between 0 and 2' },
+      { path: '', message: 'POST /x is also served by mapping B' },
+    ] },
+    { state: 'installed' },
+  ] })
+
+  it('keys the details by route identity and skips entries without one', () => {
+    expect([...details.keys()]).toEqual(['History'])
+    expect(details.get('History')?.diagnostics).toHaveLength(3)
+  })
+
+  it('places each diagnostic on its endpoint, with the path below it', () => {
+    const diagnostics = details.get('History')!.diagnostics
+    expect(diagnosticsAt(diagnostics, 'Sinks', 1)).toEqual(['TimeSeries segments need a configured InfluxDB'])
+    expect(diagnosticsAt(diagnostics, 'Sources', 0)).toEqual(['forms/mqv_qos: MQTT QoS must be between 0 and 2'])
+    expect(diagnosticsAt(diagnostics, 'Sinks', 0)).toEqual([])
+    expect(diagnosticEndpoint('')).toBeUndefined()
+    expect(diagnosticEndpoint('ResponseSinks/value/2')).toEqual({ collection: 'ResponseSinks', index: 2, below: '' })
+  })
+
+  it('explains installation causes and the TimeSeries conflict', () => {
+    expect(describeDmpCause('connection-refused')).toBe('An endpoint refused the connection.')
+    expect(describeDmpCause('')).toBe('')
+    expect(describeDmpCause('new-cause')).toBe('new-cause')
+    expect(describeDmpCategory('timeseries-type-conflict')).toContain('InfluxDB field')
   })
 })
