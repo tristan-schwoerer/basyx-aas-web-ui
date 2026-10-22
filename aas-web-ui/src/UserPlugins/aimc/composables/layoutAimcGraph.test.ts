@@ -93,8 +93,8 @@ describe('layoutAimcGraph (request and reply in one lane)', () => {
     const frame = frames.get('operation')!
     expect(frames.size).toBe(2)
     expect(top.get('s0')! - frame.top).toBe(30 + AIMC_SECTION_HEIGHT)
-    expect(top.get('s2')! - top.get('s0')! - heightOf('s0')).toBe(AIMC_ROW_GAP + AIMC_SECTION_HEIGHT,
-      'outputs follow inputs at the row gap')
+    expect(top.get('s2')! - top.get('s0')! - heightOf('s0'), 'outputs follow inputs at the row gap')
+      .toBe(AIMC_ROW_GAP + AIMC_SECTION_HEIGHT)
     expect(frame.top + frame.height).toBe(top.get('s2')! + heightOf('s2') + AIMC_GROUP_PAD_BOTTOM)
     expect(top.get('s1')!).toBeGreaterThan(frame.top + frame.height)
   })
