@@ -246,6 +246,7 @@
   import { useRequestHandling } from '@/composables/RequestHandling'
   import { useEnvStore } from '@/store/EnvironmentStore'
   import { useNavigationStore } from '@/store/NavigationStore'
+  import { base64Encode } from '@/utils/EncodeDecodeUtils'
 
   defineOptions({
     name: 'TimeSeriesData',
@@ -253,9 +254,6 @@
     // IDTA-shaped inside, its own semanticId outside).
     semanticId: ['https://admin-shell.io/idta/TimeSeries/1/1', 'https://smartproductionlab.aau.dk/variables/TimeSeries/1/0'],
   })
-
-  /** A Record field's InfluxDB field (aas-camel-dmp's profile); without one, the field's idShort is used. */
-  const COLUMN_SEMANTIC_ID = 'https://smartproductionlab.aau.dk/timeseries/Column/1/0'
 
   const props = withDefaults(
     defineProps<{
@@ -445,23 +443,22 @@
     const metadataSMC = childrenOf(timeSeriesData.value).find((smc: any) => checkIdShort(smc, 'Metadata'))
     // get the collection for records
     const recordsSMC = metadataSMC.value.find((smc: any) => checkIdShort(smc, 'Record'))
-    // create an array of records; fields of a group are named by their path (Position.X)
-    const recordsArray = recordFields(recordsSMC.value ?? [])
-    // request the concept descriptions for the records (if they have semanticIds)
-    // Create a list of promises
-    const promises = recordsArray.map((record: any) => {
-      return fetchCds(record).then((response: any) => {
-        // add ConceptDescription to the record
-        if (response) {
-          record.conceptDescriptions = response
-        }
-        return record
+    // create an array of records: the members of groups, lists and referenced elements under their
+    // idShortPath (Position.x, Waypoints[0]), as the InfluxDB fields of a LinkedSegment are named
+    void recordFields(recordsSMC.value ?? []).then(recordsArray => {
+      // request the concept descriptions for the records (if they have semanticIds)
+      const promises = recordsArray.map((record: any) => {
+        return fetchCds(record).then((response: any) => {
+          // add ConceptDescription to the record
+          if (response) {
+            record.conceptDescriptions = response
+          }
+          return record
+        })
       })
-    })
-
-    // Wait for all promises to resolve and then update the reactive records
-    Promise.all(promises).then(updatedRecords => {
-      // console.log('Updated Records: ', updatedRecords);
+      // Wait for all promises to resolve and then update the reactive records
+      return Promise.all(promises)
+    }).then(updatedRecords => {
       records.value = updatedRecords
     })
   }
@@ -471,18 +468,69 @@
     return element?.submodelElements ?? element?.value ?? []
   }
 
-  /** The Record's fields, the members of a group under their idShort path (Position.X). */
-  function recordFields (elements: any[], prefix = ''): any[] {
-    return elements.flatMap((element: any) => element?.modelType === 'SubmodelElementCollection'
-      ? recordFields(element.value ?? [], `${prefix}${element.idShort}.`)
-      : [prefix === '' ? element : { ...element, idShort: prefix + element.idShort }])
+  /** The Record's fields under their idShortPath; a ReferenceElement counts as the element it references. */
+  async function recordFields (elements: any[]): Promise<any[]> {
+    const fields: any[] = []
+    for (const element of elements) {
+      fields.push(...await fieldsOf(element, element.idShort, true))
+    }
+    return fields
   }
 
-  /** The InfluxDB field a Record field is stored in: its Column qualifier, otherwise its idShort. */
-  function columnOf (field: any): string {
-    const column = (field?.qualifiers ?? []).find((qualifier: any) => qualifier?.type === 'Column'
-      || qualifier?.semanticId?.keys?.some((key: any) => key?.value === COLUMN_SEMANTIC_ID))
-    return column?.value || field?.idShort
+  /**
+   * The fields of an element at path: collection members by idShort, list members by index, an Operation's
+   * input, InOut and output variables by idShort. Inside a referenced element, references are not followed.
+   */
+  async function fieldsOf (element: any, path: string, resolveReferences: boolean): Promise<any[]> {
+    switch (element?.modelType) {
+      case 'ReferenceElement': {
+        const referenced = resolveReferences ? await fetchReferenced(element.value) : null
+        return referenced ? fieldsOf(referenced, path, false) : []
+      }
+      case 'SubmodelElementCollection': {
+        return (await Promise.all((element.value ?? []).map((member: any) =>
+          fieldsOf(member, `${path}.${member.idShort}`, resolveReferences)))).flat()
+      }
+      case 'SubmodelElementList': {
+        return (await Promise.all((element.value ?? []).map((member: any, index: number) =>
+          fieldsOf(member, `${path}[${index}]`, resolveReferences)))).flat()
+      }
+      case 'Operation': {
+        const variables = [...(element.inputVariables ?? []), ...(element.inoutputVariables ?? []),
+                           ...(element.outputVariables ?? [])].map((variable: any) => variable.value)
+        return (await Promise.all(variables.map((variable: any) =>
+          fieldsOf(variable, `${path}.${variable.idShort}`, resolveReferences)))).flat()
+      }
+      default: {
+        return [path === element?.idShort ? element : { ...element, idShort: path }]
+      }
+    }
+  }
+
+  /** The element a Record reference points at, read from the repository this TimeSeries comes from. */
+  async function fetchReferenced (reference: any): Promise<any | null> {
+    const keys = reference?.keys ?? []
+    const repository = String(props.submodelElementData?.path ?? '').split('/submodels/', 1)[0]
+    if (keys.length < 2 || keys[0]?.type !== 'Submodel' || repository === '') {
+      return null
+    }
+    let idShortPath = ''
+    for (let i = 1; i < keys.length; i++) {
+      idShortPath += i > 1 && keys[i - 1].type === 'SubmodelElementList' ? `[${keys[i].value}]` : `${i > 1 ? '.' : ''}${keys[i].value}`
+    }
+    const response = await getRequest(`${repository}/submodels/${base64Encode(keys[0].value)}/submodel-elements/${idShortPath}`,
+                                      'retrieving a referenced Record element', true)
+    if (!response?.success || !response.data) {
+      navigationStore.dispatchSnackbar({
+        status: true,
+        timeout: 6000,
+        color: 'warning',
+        btnColor: 'buttonText',
+        text: `Record reference to ${idShortPath} could not be resolved.`,
+      })
+      return null
+    }
+    return response.data
   }
 
   /**
@@ -804,7 +852,7 @@
       return
     }
     const selectedYVariables = [...yVariables.value]
-    if (selectedYVariables.length > 0) query = query.replace(yVariableTemplate.value, columnOf(selectedYVariables[0]))
+    if (selectedYVariables.length > 0) query = query.replace(yVariableTemplate.value, selectedYVariables[0].idShort)
     query = interpolateFluxTimeRange(query, range)
 
     // console.log('Endpoint: ', endpoint, ' Query: ', query);
@@ -883,9 +931,9 @@
     // Build the array of datasets in the order of selected yVariables
     const allKeys = Object.keys(datasets)
 
-    // Find missing y-vars by their InfluxDB field
+    // Find missing y-vars by their InfluxDB field, the idShortPath
     const missingYVars = selectedYVariables
-      .filter((yVar: any) => !allKeys.includes(columnOf(yVar)))
+      .filter((yVar: any) => !allKeys.includes(yVar.idShort))
       .map((yVar: any) => yVar.idShort)
 
     if (missingYVars.length > 0) {
@@ -899,7 +947,7 @@
     }
 
     // Order datasets by yVariables and drop the missing ones
-    const newDatasets = selectedYVariables.map((yVar: any) => datasets[columnOf(yVar)] || [])
+    const newDatasets = selectedYVariables.map((yVar: any) => datasets[yVar.idShort] || [])
 
     applyTimeRange(newDatasets, selection, range)
   }

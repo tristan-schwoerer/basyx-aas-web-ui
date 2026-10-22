@@ -3,11 +3,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import TimeSeries from '@/components/Plugins/Submodels/TimeSeries_v1_1.vue'
 
 /*
- * A TimeSeries collection in aas-camel-dmp's profile: IDTA-shaped inside a submodel, Record fields that name
- * their InfluxDB field in a Column qualifier, a nested group, and a LinkedSegment on the proxied InfluxDB.
+ * A TimeSeries collection in aas-camel-dmp's profile: IDTA-shaped inside a submodel, Record fields named by their
+ * idShortPath (the InfluxDB field), a nested group, a reference to an element elsewhere in the AAS, and a
+ * LinkedSegment on the proxied InfluxDB.
  */
 
-const { postRequestMock } = vi.hoisted(() => ({ postRequestMock: vi.fn() }))
+const { getRequestMock, postRequestMock } = vi.hoisted(() => ({ getRequestMock: vi.fn(), postRequestMock: vi.fn() }))
 
 vi.mock('@/composables/AAS/ConceptDescriptionHandling', () => ({
   useConceptDescriptionHandling: () => ({ fetchCds: vi.fn().mockResolvedValue(undefined) }),
@@ -23,7 +24,7 @@ vi.mock('@/composables/AAS/ReferableUtils', () => ({
   }),
 }))
 vi.mock('@/composables/RequestHandling', () => ({
-  useRequestHandling: () => ({ getRequest: vi.fn(), postRequest: postRequestMock }),
+  useRequestHandling: () => ({ getRequest: getRequestMock, postRequest: postRequestMock }),
 }))
 vi.mock('@/store/EnvironmentStore', () => ({
   useEnvStore: () => ({
@@ -37,13 +38,6 @@ vi.mock('@/store/NavigationStore', () => ({
 }))
 
 const LINKED = 'https://admin-shell.io/idta/TimeSeries/Segments/LinkedSegment/1/1'
-
-function column (value: string): any {
-  return {
-    type: 'Column', value, valueType: 'xs:string', kind: 'ConceptQualifier',
-    semanticId: { type: 'ExternalReference', keys: [{ type: 'GlobalReference', value: 'https://smartproductionlab.aau.dk/timeseries/Column/1/0' }] },
-  }
-}
 
 function segment (idShort: string, endpoint: string): any {
   return {
@@ -66,10 +60,14 @@ function stationState (): any {
         idShort: 'Metadata', modelType: 'SubmodelElementCollection', value: [{
           idShort: 'Record', modelType: 'SubmodelElementCollection', value: [
             { idShort: 'Time', modelType: 'Property', valueType: 'xs:dateTime' },
-            { idShort: 'PackMLState', modelType: 'Property', valueType: 'xs:string', qualifiers: [column('packml_state')] },
+            { idShort: 'PackMLState', modelType: 'Property', valueType: 'xs:string' },
             { idShort: 'Position', modelType: 'SubmodelElementCollection', value: [
-              { idShort: 'X', modelType: 'Property', valueType: 'xs:double', qualifiers: [column('Position.X')] },
+              { idShort: 'X', modelType: 'Property', valueType: 'xs:double' },
             ] },
+            { idShort: 'Location', modelType: 'ReferenceElement', value: { type: 'ModelReference', keys: [
+              { type: 'Submodel', value: 'urn:aas:Parameters' },
+              { type: 'SubmodelElementCollection', value: 'Location' },
+            ] } },
           ],
         }],
       },
@@ -105,6 +103,15 @@ function csv (): string {
 
 describe('TimeSeries_v1_1.vue on a TimeSeries collection', () => {
   beforeEach(() => {
+    getRequestMock.mockReset()
+    getRequestMock.mockResolvedValue({ success: true, data: {
+      idShort: 'Location', modelType: 'SubmodelElementCollection', value: [
+        { idShort: 'x', modelType: 'Property', valueType: 'xs:double' },
+        { idShort: 'Waypoints', modelType: 'SubmodelElementList', value: [
+          { modelType: 'Property', valueType: 'xs:double' }, { modelType: 'Property', valueType: 'xs:double' },
+        ] },
+      ],
+    } })
     postRequestMock.mockReset()
     postRequestMock.mockResolvedValue({ success: true, data: csv() })
   })
@@ -113,7 +120,15 @@ describe('TimeSeries_v1_1.vue on a TimeSeries collection', () => {
     const vm = createWrapper().vm as any
     await flushPromises()
     expect(vm.segments.map((s: any) => s.idShort)).toEqual(['Live', 'Elsewhere'])
-    expect(vm.records.map((r: any) => r.idShort)).toEqual(['Time', 'PackMLState', 'Position.X'])
+    expect(vm.records.map((r: any) => r.idShort)).toEqual(
+      ['Time', 'PackMLState', 'Position.X', 'Location.x', 'Location.Waypoints[0]', 'Location.Waypoints[1]'])
+  })
+
+  it('resolves a Record reference from the repository the TimeSeries comes from', async () => {
+    createWrapper()
+    await flushPromises()
+    expect(getRequestMock).toHaveBeenCalledWith(
+      'http://aas:8081/submodels/dXJuOmFhczpQYXJhbWV0ZXJz/submodel-elements/Location', expect.any(String), true)
   })
 
   it('queries a segment on the proxied InfluxDB through the Web UI, by the field\'s Column', async () => {
@@ -150,6 +165,6 @@ describe('TimeSeries_v1_1.vue on a TimeSeries collection', () => {
     const [path, query, headers] = postRequestMock.mock.calls[0]
     expect(path).toBe('http://localhost:8086/api/v2/query?org=basyx')
     expect(headers.get('Authorization')).toBe('Token browser-token')
-    expect(query).toContain('r["_field"] == "packml_state"')
+    expect(query).toContain('r["_field"] == "PackMLState"')
   })
 })
