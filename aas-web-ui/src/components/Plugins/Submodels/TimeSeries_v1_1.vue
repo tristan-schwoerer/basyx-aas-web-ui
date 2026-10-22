@@ -72,7 +72,7 @@
         </v-row>
         <!-- API Token -->
         <v-text-field
-          v-if="segmentType == 'LinkedSegment' && showTokenInput"
+          v-if="segmentType == 'LinkedSegment' && showTokenInput && !selectedSegmentProxied"
           v-model="apiToken"
           clearable
           density="compact"
@@ -249,8 +249,13 @@
 
   defineOptions({
     name: 'TimeSeriesData',
-    semanticId: 'https://admin-shell.io/idta/TimeSeries/1/1',
+    // The IDTA TimeSeries submodel, and a TimeSeries collection inside a submodel (aas-camel-dmp's profile:
+    // IDTA-shaped inside, its own semanticId outside).
+    semanticId: ['https://admin-shell.io/idta/TimeSeries/1/1', 'https://smartproductionlab.aau.dk/variables/TimeSeries/1/0'],
   })
+
+  /** A Record field's InfluxDB field (aas-camel-dmp's profile); without one, the field's idShort is used. */
+  const COLUMN_SEMANTIC_ID = 'https://smartproductionlab.aau.dk/timeseries/Column/1/0'
 
   const props = withDefaults(
     defineProps<{
@@ -312,6 +317,10 @@
   let activeRequestId = 0
 
   // Computed properties
+  /** The selected LinkedSegment is queried through the Web UI's proxy, which needs no token here. */
+  const selectedSegmentProxied = computed(() => proxiedEndpoint(
+    selectedSegment.value?.value?.find((element: any) => checkIdShort(element, 'Endpoint'))?.value) !== null)
+
   const segmentType = computed(() => {
     if (!selectedSegment.value) {
       return null
@@ -428,16 +437,16 @@
 
     timeSeriesData.value = { ...props.submodelElementData } // create local copy of the TimeSeriesData
     // get the collection for segments
-    const segmentsSMC = timeSeriesData.value.submodelElements.find((smc: any) => checkIdShort(smc, 'Segments'))
+    const segmentsSMC = childrenOf(timeSeriesData.value).find((smc: any) => checkIdShort(smc, 'Segments'))
     // create an array of segments
     segments.value = segmentsSMC.value
     // console.log('Segments: ', segments.value);
     // get the collection for metadata
-    const metadataSMC = timeSeriesData.value.submodelElements.find((smc: any) => checkIdShort(smc, 'Metadata'))
+    const metadataSMC = childrenOf(timeSeriesData.value).find((smc: any) => checkIdShort(smc, 'Metadata'))
     // get the collection for records
     const recordsSMC = metadataSMC.value.find((smc: any) => checkIdShort(smc, 'Record'))
-    // create an array of records
-    const recordsArray = recordsSMC.value
+    // create an array of records; fields of a group are named by their path (Position.X)
+    const recordsArray = recordFields(recordsSMC.value ?? [])
     // request the concept descriptions for the records (if they have semanticIds)
     // Create a list of promises
     const promises = recordsArray.map((record: any) => {
@@ -455,6 +464,54 @@
       // console.log('Updated Records: ', updatedRecords);
       records.value = updatedRecords
     })
+  }
+
+  /** The children of the TimeSeries: a submodel's submodelElements, or a collection's value. */
+  function childrenOf (element: any): any[] {
+    return element?.submodelElements ?? element?.value ?? []
+  }
+
+  /** The Record's fields, the members of a group under their idShort path (Position.X). */
+  function recordFields (elements: any[], prefix = ''): any[] {
+    return elements.flatMap((element: any) => element?.modelType === 'SubmodelElementCollection'
+      ? recordFields(element.value ?? [], `${prefix}${element.idShort}.`)
+      : [prefix === '' ? element : { ...element, idShort: prefix + element.idShort }])
+  }
+
+  /** The InfluxDB field a Record field is stored in: its Column qualifier, otherwise its idShort. */
+  function columnOf (field: any): string {
+    const column = (field?.qualifiers ?? []).find((qualifier: any) => qualifier?.type === 'Column'
+      || qualifier?.semanticId?.keys?.some((key: any) => key?.value === COLUMN_SEMANTIC_ID))
+    return column?.value || field?.idShort
+  }
+
+  /**
+   * A LinkedSegment Endpoint on INFLUXDB_PROXY_ORIGIN, as the Web UI's nginx query proxy (which adds the
+   * token server-side); null for any other Endpoint, which is queried directly.
+   */
+  function proxiedEndpoint (endpoint: string | undefined): string | null {
+    const origin = String(envStore.getEnvInfluxdbProxyOrigin ?? '').trim()
+    if (!endpoint || origin === '' || origin.includes('PLACEHOLDER')) {
+      return null
+    }
+    try {
+      const url = new URL(endpoint)
+      if (url.origin !== new URL(origin).origin || url.pathname !== '/api/v2/query') {
+        return null
+      }
+      const basePath = String(envStore.getEnvBasePath ?? '').trim()
+      const prefix = basePath === '' || basePath.includes('PLACEHOLDER') ? '/' : basePath.replace(/\/?$/, '/')
+      return `${prefix}api/influxdb/api/v2/query${url.search}`
+    } catch {
+      return null
+    }
+  }
+
+  /** The repository path of a segment's element, for a TimeSeries submodel or collection. */
+  function segmentElementPath (segmentIdShort: string, element: string): string {
+    const inCollection = props.submodelElementData.modelType === 'SubmodelElementCollection'
+    return props.submodelElementData.path + (inCollection ? '.Segments.' : '/submodel-elements/Segments.')
+      + segmentIdShort + '.' + element
   }
 
   function fetchInternalData (): void {
@@ -548,11 +605,7 @@
     if (!path || path.trim() === '') {
       path = dataFile?.value || ''
       if (path.startsWith('/')) {
-        path
-          = props.submodelElementData.path
-            + '/submodel-elements/Segments.'
-            + selectedSegment.value.idShort
-            + '.Data/attachment'
+        path = segmentElementPath(selectedSegment.value.idShort, 'Data/attachment')
       }
     }
 
@@ -751,17 +804,18 @@
       return
     }
     const selectedYVariables = [...yVariables.value]
-    if (selectedYVariables.length > 0) query = query.replace(yVariableTemplate.value, selectedYVariables[0].idShort)
+    if (selectedYVariables.length > 0) query = query.replace(yVariableTemplate.value, columnOf(selectedYVariables[0]))
     query = interpolateFluxTimeRange(query, range)
 
     // console.log('Endpoint: ', endpoint, ' Query: ', query);
     // construct the headers for the request
+    const proxied = proxiedEndpoint(endpoint)
     const requestHeaders = new Headers()
-    requestHeaders.append('Authorization', 'Token ' + apiToken.value)
+    if (!proxied) requestHeaders.append('Authorization', 'Token ' + apiToken.value)
     requestHeaders.append('Accept', 'application/csv')
     requestHeaders.append('Content-Type', 'application/vnd.flux')
     // construct the request
-    const path = endpoint
+    const path = proxied ?? endpoint
     const content = query
     const headers = requestHeaders
     const context = 'fetching data from Time Series Database'
@@ -829,9 +883,9 @@
     // Build the array of datasets in the order of selected yVariables
     const allKeys = Object.keys(datasets)
 
-    // Find missing y-vars by exact match
+    // Find missing y-vars by their InfluxDB field
     const missingYVars = selectedYVariables
-      .filter((yVar: any) => !allKeys.includes(yVar.idShort))
+      .filter((yVar: any) => !allKeys.includes(columnOf(yVar)))
       .map((yVar: any) => yVar.idShort)
 
     if (missingYVars.length > 0) {
@@ -845,7 +899,7 @@
     }
 
     // Order datasets by yVariables and drop the missing ones
-    const newDatasets = selectedYVariables.map((yVar: any) => datasets[yVar.idShort] || [])
+    const newDatasets = selectedYVariables.map((yVar: any) => datasets[columnOf(yVar)] || [])
 
     applyTimeRange(newDatasets, selection, range)
   }

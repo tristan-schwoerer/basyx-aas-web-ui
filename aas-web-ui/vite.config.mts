@@ -134,6 +134,18 @@ export default defineConfig(({ mode }) => {
               },
             }
           : {}),
+        // Mirrors the nginx InfluxDB query proxy, e.g. INFLUXDB_PROXY_ORIGIN=http://localhost:8086
+        // with INFLUXDB_PROXY_TOKEN; the frontend also needs VITE_INFLUXDB_PROXY_ORIGIN.
+        ...(process.env.INFLUXDB_PROXY_ORIGIN
+          ? {
+              '/api/influxdb/api/v2/query': {
+                target: process.env.INFLUXDB_PROXY_ORIGIN,
+                changeOrigin: true,
+                rewrite: (path: string) => path.replace(/^\/api\/influxdb/, ''),
+                headers: { Authorization: `Token ${process.env.INFLUXDB_PROXY_TOKEN ?? ''}` },
+              },
+            }
+          : {}),
       },
     },
   }

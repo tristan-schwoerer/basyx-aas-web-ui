@@ -53,6 +53,8 @@ export const useEnvStore = defineStore('envStore', () => {
   const primaryLightColor = ref(withProductionPlaceholder(import.meta.env.VITE_PRIMARY_LIGHT_COLOR, '/__PRIMARY_LIGHT_COLOR_PLACEHOLDER__/'))
   const primaryDarkColor = ref(withProductionPlaceholder(import.meta.env.VITE_PRIMARY_DARK_COLOR, '/__PRIMARY_DARK_COLOR_PLACEHOLDER__/'))
   const influxdbToken = ref(withProductionPlaceholder(import.meta.env.VITE_INFLUXDB_TOKEN, '/__INFLUXDB_TOKEN_PLACEHOLDER__/'))
+  // An InfluxDB whose LinkedSegment Endpoints the Web UI's nginx proxies, adding the token server-side.
+  const influxdbProxyOrigin = ref(withProductionPlaceholder(import.meta.env.VITE_INFLUXDB_PROXY_ORIGIN, '/__INFLUXDB_PROXY_ORIGIN_PLACEHOLDER__/'))
   const keycloakActive = ref(withProductionPlaceholder(import.meta.env.VITE_KEYCLOAK_ACTIVE, '/__KEYCLOAK_ACTIVE_PLACEHOLDER__/'))
   const keycloakUrl = ref(withProductionPlaceholder(import.meta.env.VITE_KEYCLOAK_URL, '/__KEYCLOAK_URL_PLACEHOLDER__/'))
   const keycloakRealm = ref(withProductionPlaceholder(import.meta.env.VITE_KEYCLOAK_REALM, '/__KEYCLOAK_REALM_PLACEHOLDER__/'))
@@ -102,6 +104,7 @@ export const useEnvStore = defineStore('envStore', () => {
   const getEnvPrimaryLightColor = computed(() => primaryLightColor.value)
   const getEnvPrimaryDarkColor = computed(() => primaryDarkColor.value)
   const getEnvInfluxdbToken = computed(() => influxdbToken.value)
+  const getEnvInfluxdbProxyOrigin = computed(() => influxdbProxyOrigin.value)
   const getKeycloakActive = computed(() => parseBooleanEnv(keycloakActive.value))
   const getKeycloakUrl = computed(() => keycloakUrl.value)
   const getKeycloakRealm = computed(() => keycloakRealm.value)
@@ -188,6 +191,7 @@ export const useEnvStore = defineStore('envStore', () => {
     PRIMARY_LIGHT_COLOR: getEnvPrimaryLightColor,
     PRIMARY_DARK_COLOR: getEnvPrimaryDarkColor,
     INFLUXDB_TOKEN: getEnvInfluxdbToken,
+    INFLUXDB_PROXY_ORIGIN: getEnvInfluxdbProxyOrigin,
     KEYCLOAK_ACTIVE: getKeycloakActive,
     KEYCLOAK_URL: getKeycloakUrl,
     KEYCLOAK_REALM: getKeycloakRealm,
@@ -285,6 +289,7 @@ export const useEnvStore = defineStore('envStore', () => {
     getEnvPrimaryLightColor,
     getEnvPrimaryDarkColor,
     getEnvInfluxdbToken,
+    getEnvInfluxdbProxyOrigin,
     getKeycloakActive,
     getKeycloakUrl,
     getKeycloakRealm,

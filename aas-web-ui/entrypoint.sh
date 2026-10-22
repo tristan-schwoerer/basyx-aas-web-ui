@@ -48,6 +48,8 @@
 : "${CX_EDC_BFF_ENABLED:=false}"
 : "${CX_EDC_BFF_PORT:=3001}"
 : "${DMP_STATUS_URL:=}"
+: "${INFLUXDB_PROXY_ORIGIN:=}"
+: "${INFLUXDB_PROXY_TOKEN:=}"
 
 if [ "$CX_EDC_BFF_ENABLED" = "true" ] && [ -z "${CX_EDC_BFF_UPSTREAM_URL+x}" ]; then
     CX_EDC_BFF_UPSTREAM_URL="http://127.0.0.1:${CX_EDC_BFF_PORT}"
@@ -64,7 +66,9 @@ export BASE_PATH_NGINX_PREFIX
 export CX_EDC_BFF_UPSTREAM_URL
 export CX_EDC_BFF_PORT
 export DMP_STATUS_URL
-envsubst '${BASE_PATH_NGINX_PREFIX} ${CX_EDC_BFF_UPSTREAM_URL} ${DMP_STATUS_URL}' < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf
+export INFLUXDB_PROXY_ORIGIN
+export INFLUXDB_PROXY_TOKEN
+envsubst '${BASE_PATH_NGINX_PREFIX} ${CX_EDC_BFF_UPSTREAM_URL} ${DMP_STATUS_URL} ${INFLUXDB_PROXY_ORIGIN} ${INFLUXDB_PROXY_TOKEN}' < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf
 
 # Add a trailing slash to BASE_PATH for the replacement in files
 BASE_PATH_WITH_SLASH=$(echo "$BASE_PATH" | sed 's|/*$|/|')
@@ -200,6 +204,7 @@ printf "%-38s %s\n" "Company Lookup Domain:" "$COMPANY_LOOKUP_DOMAIN"
 printf "%-38s %s\n" "Integrated Catena-X EDC BFF:" "$CX_EDC_BFF_ENABLED"
 printf "%-38s %s\n" "Catena-X EDC BFF upstream:" "$CX_EDC_BFF_UPSTREAM_URL"
 printf "%-38s %s\n" "DMP status upstream:" "${DMP_STATUS_URL:-(disabled)}"
+printf "%-38s %s\n" "InfluxDB query proxy:" "${INFLUXDB_PROXY_ORIGIN:-(disabled)}"
 echo "-------------------------------------------------------------------------------------------------------------------------"
 
 # Finish discovery before sed -i replaces directory entries. On older Btrfs
@@ -226,6 +231,7 @@ printf '%s\n' \
     "s|/__PRIMARY_LIGHT_COLOR_PLACEHOLDER__/|$PRIMARY_LIGHT_COLOR|g" \
     "s|/__PRIMARY_DARK_COLOR_PLACEHOLDER__/|$PRIMARY_DARK_COLOR|g" \
     "s|/__INFLUXDB_TOKEN_PLACEHOLDER__/|$INFLUXDB_TOKEN|g" \
+    "s|/__INFLUXDB_PROXY_ORIGIN_PLACEHOLDER__/|$INFLUXDB_PROXY_ORIGIN|g" \
     "s|/__KEYCLOAK_ACTIVE_PLACEHOLDER__/|$KEYCLOAK_ACTIVE|g" \
     "s|/__KEYCLOAK_URL_PLACEHOLDER__/|$KEYCLOAK_URL|g" \
     "s|/__KEYCLOAK_REALM_PLACEHOLDER__/|$KEYCLOAK_REALM|g" \
