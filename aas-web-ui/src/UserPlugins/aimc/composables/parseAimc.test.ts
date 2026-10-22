@@ -199,12 +199,13 @@ describeFixtures('parseAimc (stoppering)', () => {
 
   it('finds the MappingConfigurations list despite its 1/0 semantic id', () => {
     expect(result.warnings).toEqual([])
-    expect(result.mappings).toHaveLength(5)
+    expect(result.mappings).toHaveLength(6)
   })
 
   it('recovers the authored route name from the IEC 61360 class metadata', () => {
     expect(result.mappings.map(mapping => mapping.name)).toEqual([
       'MQTT',
+      'MQTTHistory',
       'Halt',
       'Occupy',
       'Release',
@@ -225,6 +226,7 @@ describeFixtures('parseAimcRoute (stoppering)', () => {
     return
   }
   const items = routeItems(loadCase('stoppering').aimc)
+  const haltIndex = parseAimc(loadCase('stoppering').aimc).mappings.findIndex(mapping => mapping.name === 'Halt')
 
   it('parses a single route on its own, without the surrounding submodel', () => {
     const mqtt = parseAimcRoute(items[0], 0)
@@ -257,7 +259,7 @@ describeFixtures('parseAimcRoute (stoppering)', () => {
   })
 
   it('defers route classification until the Operation and action targets resolve', () => {
-    const halt = parseAimcRoute(items[1], 1)
+    const halt = parseAimcRoute(items[haltIndex], haltIndex)
     expect(halt.name).toBe('Halt')
     expect(halt.kind).toBe('data')
     expect(halt.sources[0]!.refPath).toContain('Skills/Halt/operation')
@@ -271,9 +273,10 @@ describeFixtures('semantic AID reference resolution (stoppering)', () => {
   }
   const { aimc, submodels } = loadCase('stoppering')
   const items = routeItems(aimc)
+  const haltIndex = parseAimc(aimc).mappings.findIndex(mapping => mapping.name === 'Halt')
 
   it('resolves the action ancestor and its input schema from the URL-form Submodel id', () => {
-    const route = parseAimcRoute(items[1], 1)
+    const route = parseAimcRoute(items[haltIndex], haltIndex)
     const resolved = resolveAimcReference(route.sinks[0]!.keys, submodels)
     expect(resolved.kind).toBe('affordance')
     expect(resolved.affordancePath).toBe('actions/Halt')
@@ -283,14 +286,14 @@ describeFixtures('semantic AID reference resolution (stoppering)', () => {
   })
 
   it('reports unavailable references rather than grouping them as affordances', () => {
-    const route = parseAimcRoute(items[1], 1)
+    const route = parseAimcRoute(items[haltIndex], haltIndex)
     const resolved = resolveAimcReference(route.sinks[0]!.keys, new Map())
     expect(resolved.kind).toBe('unknown')
     expect(resolved.warning).toContain('could not be loaded')
   })
 
   it('classifies an Operation bound to an AID action as a request/reply operation mapping', () => {
-    const halt = resolveAimcMapping(parseAimcRoute(items[1], 1), submodels)
+    const halt = resolveAimcMapping(parseAimcRoute(items[haltIndex], haltIndex), submodels)
     expect(halt.sources[0]!.kind).toBe('operation')
     expect(halt.kind).toBe('delegated-action')
     expect(halt.bidirectional).toBe(true)
@@ -330,7 +333,8 @@ describeFixtures('OPC UA only station (imaDispensing)', () => {
     expect(state.kind).toBe('affordance')
     expect(state.group).toBe('properties')
     expect(state.origin).toBe('AssetInterfacesDescription · interface_opcua')
-    expect(state.readers.map(use => use.endpointId)).toEqual(['State'])
+    // Read by the route keeping the AAS Properties current and by the state history.
+    expect(state.readers.map(use => use.endpointId)).toEqual(['State', 'State'])
     expect(state.writers).toEqual([])
 
     const packml = index.find(entry => entry.label === 'PackMLState')!
