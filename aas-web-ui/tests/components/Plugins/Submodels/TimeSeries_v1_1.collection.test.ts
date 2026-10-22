@@ -64,6 +64,11 @@ function stationState (): any {
             { idShort: 'Position', modelType: 'SubmodelElementCollection', value: [
               { idShort: 'X', modelType: 'Property', valueType: 'xs:double' },
             ] },
+            { idShort: 'Tolerance', modelType: 'Range', valueType: 'xs:double' },
+            { idShort: 'Batch', modelType: 'MultiLanguageProperty', value: [
+              { language: 'en', text: 'Batch name' }, { language: 'de', text: 'Chargenname' },
+            ] },
+            { idShort: 'Report', modelType: 'File', contentType: 'application/pdf' },
             { idShort: 'Location', modelType: 'ReferenceElement', value: { type: 'ModelReference', keys: [
               { type: 'Submodel', value: 'urn:aas:Parameters' },
               { type: 'SubmodelElementCollection', value: 'Location' },
@@ -121,7 +126,8 @@ describe('TimeSeries_v1_1.vue on a TimeSeries collection', () => {
     await flushPromises()
     expect(vm.segments.map((s: any) => s.idShort)).toEqual(['Live', 'Elsewhere'])
     expect(vm.records.map((r: any) => r.idShort)).toEqual(
-      ['Time', 'PackMLState', 'Position.X', 'Location.x', 'Location.Waypoints[0]', 'Location.Waypoints[1]'])
+      ['Time', 'PackMLState', 'Position.X', 'Tolerance.min', 'Tolerance.max', 'Batch.en', 'Batch.de', 'Report',
+        'Location.x', 'Location.Waypoints[0]', 'Location.Waypoints[1]'])
   })
 
   it('resolves a Record reference from the repository the TimeSeries comes from', async () => {

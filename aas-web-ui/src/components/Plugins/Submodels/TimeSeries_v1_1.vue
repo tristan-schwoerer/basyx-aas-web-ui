@@ -478,8 +478,9 @@
   }
 
   /**
-   * The fields of an element at path: collection members by idShort, list members by index, an Operation's
-   * input, InOut and output variables by idShort. Inside a referenced element, references are not followed.
+   * The fields of an element at path: a Range's min and max, a MultiLanguageProperty's languages, collection
+   * members by idShort, list members by index, an Operation's input, InOut and output variables by idShort; a File
+   * is one field. Inside a referenced element, references are not followed.
    */
   async function fieldsOf (element: any, path: string, resolveReferences: boolean): Promise<any[]> {
     switch (element?.modelType) {
@@ -494,6 +495,13 @@
       case 'SubmodelElementList': {
         return (await Promise.all((element.value ?? []).map((member: any, index: number) =>
           fieldsOf(member, `${path}[${index}]`, resolveReferences)))).flat()
+      }
+      case 'Range': {
+        return ['min', 'max'].map(bound => ({ ...element, modelType: 'Property', idShort: `${path}.${bound}` }))
+      }
+      case 'MultiLanguageProperty': {
+        return (element.value ?? []).map((entry: any) => ({ ...element, modelType: 'Property', valueType: 'xs:string',
+                                                            idShort: `${path}.${entry.language}` }))
       }
       case 'Operation': {
         const variables = [...(element.inputVariables ?? []), ...(element.inoutputVariables ?? []),
