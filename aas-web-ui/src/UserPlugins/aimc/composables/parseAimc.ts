@@ -114,7 +114,7 @@ function isDouble (element: any): number | undefined {
 }
 
 /** Extracts the `interface_<protocol>` segment of a reference, if present. */
-function protocolOf (keys: AimcReferenceKey[]): string {
+export function protocolOf (keys: AimcReferenceKey[]): string {
   const interfaceKey = keys.find(key => /^interface[_.-]/i.test(key.value))
   return interfaceKey ? interfaceKey.value.replace(/^interface[_.-]/i, '') : ''
 }

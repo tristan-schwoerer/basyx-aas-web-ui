@@ -80,6 +80,8 @@
     badges: Array<{ text: string, color?: string }>
     member?: string
     keys: AimcReferenceKey[]
+    /** Overrides the icon of the endpoint kind, e.g. for the `meta` node. */
+    icon?: string
     /** Why the DMP does not run this endpoint as authored (its diagnostics). */
     problems?: string[]
     /** The connected points, top to bottom: the request (`forward`) and/or the `reply`. */
@@ -110,7 +112,7 @@
       'aas-element': 'mdi-database-outline',
       'unknown': 'mdi-help-circle-outline',
     }
-    return icons[props.data.kind] ?? icons.unknown
+    return props.data.icon ?? icons[props.data.kind] ?? icons.unknown
   })
 </script>
 
@@ -136,6 +138,10 @@
 
   .aimc-node--pushed {
     border-left: 3px solid rgb(var(--v-theme-success));
+  }
+
+  .aimc-node--meta {
+    border-style: dotted;
   }
 
   .aimc-node--problem {

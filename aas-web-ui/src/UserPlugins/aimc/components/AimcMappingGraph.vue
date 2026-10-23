@@ -154,6 +154,8 @@
     handleShare,
     layoutAimcGraph,
   } from '../composables/layoutAimcGraph'
+  import { metaUsage, requestSourceUsage } from '../composables/luaUsage'
+  import { protocolOf } from '../composables/parseAimc'
   import AimcEndpointNode from './AimcEndpointNode.vue'
   import '@vue-flow/controls/dist/style.css'
   import '@vue-flow/core/dist/style.css'
@@ -263,24 +265,47 @@
     return { kind: 'pushed', text: 'pushed', color: 'success' }
   }
 
-  function endpointBadges (endpoint: AimcMapping['sources'][number] | AimcMapping['sinks'][number]): Array<{ text: string, color?: string }> {
+  /**
+   * What an endpoint addresses, alike for all four roles: an Operation
+   * variable (`Operation` · `input`/`inoutput`/`output`), an action's data
+   * schema (`MQTT` · `action input`/`action output`), another affordance
+   * (`MQTT` · `properties`), or an AAS element (`AAS`). The role itself
+   * (request/response source/sink) is written on the endpoint's edge.
+   */
+  interface BadgedEndpoint {
+    kind?: string
+    keys: AimcMapping['sources'][number]['keys']
+    group?: string
+    resolved?: AimcResponseEndpoint['resolved']
+  }
+
+  function targetBadges (endpoint: BadgedEndpoint): Array<{ text: string, color?: string }> {
+    const kind = endpoint.resolved?.kind ?? endpoint.kind
+    const direction = endpoint.resolved?.direction
+    if (kind === 'operation') {
+      return direction ? [{ text: 'Operation' }, { text: direction }] : [{ text: 'Operation' }]
+    }
+    if (kind === 'aas-element') {
+      return [{ text: 'AAS' }]
+    }
     const badges: Array<{ text: string, color?: string }> = []
-    if (endpoint.protocol) {
-      badges.push({ text: endpoint.protocol.toUpperCase() })
+    const protocol = protocolOf(endpoint.keys)
+    if (protocol) {
+      badges.push({ text: protocol.toUpperCase() })
     }
-    if (endpoint.group) {
+    const action = endpoint.resolved?.affordancePath?.startsWith('actions/') || endpoint.group === 'actions'
+    if (action && (direction === 'input' || direction === 'output')) {
+      badges.push({ text: `action ${direction}` })
+    } else if (endpoint.group) {
       badges.push({ text: endpoint.group })
-    }
-    if (endpoint.kind === 'aas-element') {
-      badges.push({ text: 'AAS' })
-    } else if (endpoint.kind === 'operation') {
-      badges.push({ text: 'operation' })
+    } else if (action) {
+      badges.push({ text: 'action' })
     }
     return badges
   }
 
   function sourceBadges (mapping: AimcMapping, source: AimcMapping['sources'][number]): Array<{ text: string, color?: string }> {
-    const badges = endpointBadges(source)
+    const badges = targetBadges(source)
     const delivery = sourceDelivery(source, mapping.defaultPollingInterval)
     if (delivery.text) {
       badges.push({ text: delivery.text, color: delivery.color })
@@ -296,11 +321,17 @@
   }
 
   function sinkBadges (sink: AimcMapping['sinks'][number]): Array<{ text: string, color?: string }> {
-    const badges = endpointBadges(sink)
+    const badges = targetBadges(sink)
     if (sink.kind === 'unknown') {
       badges.push({ text: 'unresolved', color: 'warning' })
     }
     return badges
+  }
+
+  /** The entrypoint as authored, e.g. `aimc_main(sources, requestSources)`. */
+  function entrypointOf (code: string): string {
+    const parameters = /function\s+aimc_main\s*\(([^)]*)\)/.exec(code)?.[1]
+    return parameters === undefined ? 'aimc_main(sources)' : `aimc_main(${parameters.split(',').map(name => name.trim()).join(', ')})`
   }
 
   function lineCount (code: string): number {
@@ -453,7 +484,7 @@
         targetHandle: null,
         // A source outside the trigger selection is read, but does not run the mapping.
         animated: source.triggers,
-        label: [source.sourceId, delivery.text].filter(Boolean).join(' · '),
+        label: 'request source',
         class: 'aimc-edge',
         markerEnd: MarkerType.ArrowClosed,
       })
@@ -463,6 +494,7 @@
           target: id,
           sourceHandle: null,
           targetHandle: 'reply',
+          label: 'reply',
         })
       }
     }
@@ -488,7 +520,7 @@
         target: id,
         sourceHandle: null,
         targetHandle: 'forward',
-        label: sink.sinkId || undefined,
+        label: 'request sink',
         class: 'aimc-edge',
         markerEnd: MarkerType.ArrowClosed,
       })
@@ -499,6 +531,7 @@
           target: responseNodeId,
           sourceHandle: 'reply',
           targetHandle: null,
+          label: 'reply',
         })
       }
     }
@@ -513,20 +546,20 @@
           label: endpoint.id || `response source ${index + 1}`,
           kind: endpoint.resolved?.kind ?? 'unknown',
           deliveryKind: 'response',
-          badges: [{ text: 'response source' }],
+          badges: targetBadges(endpoint),
           member: endpoint.resolved?.selectedMember ?? endpoint.refPath,
           keys: endpoint.keys,
           problems: problemsAt('ResponseSources', index),
           handles: ['reply'],
         } satisfies AimcEndpointNodeData)
-        replyEdge(`${id}-to-response`, { source: id, sourceHandle: 'reply', target: responseNodeId, targetHandle: null, label: endpoint.id })
+        replyEdge(`${id}-to-response`, { source: id, sourceHandle: 'reply', target: responseNodeId, targetHandle: null, label: 'response source' })
       }
 
       if (mapping.responseSources.length === 0 && operationIndex !== -1) {
         for (const [index, sink] of mapping.sinks.entries()) {
           if (sink.kind === 'affordance') {
             const id = `${mapping.id}-sink-${index}`
-            replyEdge(`${id}-to-response`, { source: id, sourceHandle: 'reply', target: responseNodeId, targetHandle: null })
+            replyEdge(`${id}-to-response`, { source: id, sourceHandle: 'reply', target: responseNodeId, targetHandle: null, label: 'reply' })
           }
         }
       }
@@ -545,7 +578,7 @@
             target: `${mapping.id}-source-${sharedIndex}`,
             sourceHandle: null,
             targetHandle: 'reply',
-            label: endpoint.id,
+            label: 'response sink',
           })
           continue
         }
@@ -557,13 +590,67 @@
           label: endpoint.id || `response sink ${index + 1}`,
           kind: endpoint.resolved?.kind ?? 'unknown',
           deliveryKind: 'response',
-          badges: [{ text: 'response sink' }],
+          badges: targetBadges(endpoint),
           member: endpoint.resolved?.selectedMember ?? endpoint.resolved?.operationPath ?? endpoint.refPath,
           keys: endpoint.keys,
           problems: problemsAt('ResponseSinks', index),
           handles: ['reply'],
         } satisfies AimcEndpointNodeData)
-        replyEdge(`${responseNodeId}-to-${id}`, { source: responseNodeId, target: id, targetHandle: 'reply', sourceHandle: null, label: endpoint.id })
+        replyEdge(`${responseNodeId}-to-${id}`, { source: responseNodeId, target: id, targetHandle: 'reply', sourceHandle: null, label: 'response sink' })
+      }
+    }
+
+    // What the transformations read besides their sources: the request sources
+    // a ResponseTransformation takes as its second parameter, and the DMP's
+    // `meta` table. Both are read, not written, so they are drawn as context.
+    const contextEdge = (id: string, source: string, target: string, label: string): void => {
+      nextEdges.push({
+        id,
+        source,
+        target,
+        sourceHandle: 'forward',
+        targetHandle: null,
+        label,
+        class: 'aimc-edge aimc-edge--context',
+        markerEnd: MarkerType.ArrowClosed,
+        // Context comes from the left, also into the (mirrored) response lane.
+        data: { entersLeft: true },
+      } as Edge)
+    }
+    if (hasResponseNode && mapping.response.present) {
+      const usage = requestSourceUsage(mapping.response.code)
+      for (const [index, source] of mapping.sources.entries()) {
+        if (usage.kind === 'all' || (usage.kind === 'some' && usage.ids.includes(source.sourceId))) {
+          contextEdge(`${mapping.id}-source-${index}-to-response`, `${mapping.id}-source-${index}`, responseNodeId, 'requestSources')
+        }
+      }
+    }
+    const requestMeta = metaUsage(mapping.request.code)
+    const responseMeta = hasResponseNode ? metaUsage(mapping.response.code) : []
+    if (requestMeta.length > 0 || responseMeta.length > 0) {
+      const id = `${mapping.id}-meta`
+      if (requestMeta.length > 0) {
+        sourceColumn.unshift({ id })
+      } else {
+        replyLeft.push({ id })
+      }
+      pushNode(id, 'aimcSource', SOURCE_X, {
+        nodeId: id,
+        role: 'source',
+        label: 'meta',
+        kind: 'unknown',
+        deliveryKind: 'meta',
+        icon: 'mdi-information-outline',
+        badges: [{ text: 'DMP' }],
+        member: [...new Set([...requestMeta, ...responseMeta])].join(', '),
+        keys: [],
+        handles: [],
+      } satisfies AimcEndpointNodeData)
+      if (requestMeta.length > 0) {
+        contextEdge(`${id}-to-request`, id, requestNodeId, 'meta')
+      }
+      if (responseMeta.length > 0) {
+        contextEdge(`${id}-to-response`, id, responseNodeId, 'meta')
       }
     }
 
@@ -587,7 +674,7 @@
       handles: handles.get(requestNodeId) ?? [],
       direction: 'request',
       label: 'Transformation',
-      entrypoint: 'aimc_main(sources)',
+      entrypoint: entrypointOf(mapping.request.code),
       absent: !mapping.request.present || mapping.request.code === '',
       lines: lineCount(mapping.request.code),
     })
@@ -596,7 +683,7 @@
         handles: handles.get(responseNodeId) ?? [],
         direction: 'response',
         label: 'ResponseTransformation',
-        entrypoint: 'aimc_main(sources)',
+        entrypoint: entrypointOf(mapping.response.code),
         absent: !mapping.response.present || mapping.response.code === '',
         lines: lineCount(mapping.response.code),
       })
@@ -654,7 +741,7 @@
         entering.push({
           id,
           type: 'target',
-          position: edge.target === requestNodeId ? Position.Left : Position.Right,
+          position: edge.target === requestNodeId || edge.data?.entersLeft ? Position.Left : Position.Right,
           top: '50%',
           peer: edge.source,
           peerHandle: edge.sourceHandle,
@@ -980,6 +1067,12 @@
   :deep(.aimc-edge--reply .vue-flow__edge-path) {
     stroke-dasharray: 3 5;
     stroke-width: 1.5;
+  }
+
+  :deep(.aimc-edge--context .vue-flow__edge-path) {
+    stroke-dasharray: 1 4;
+    stroke-linecap: round;
+    opacity: 0.8;
   }
 
   :deep(.aimc-edge .vue-flow__edge-text) {

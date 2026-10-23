@@ -120,11 +120,51 @@ describe('AIMC request/reply graph', () => {
     const placed = updateNode.mock.calls.findLast(([id]) => id === operation.id)![1]
     expect(placed.data.sections.map((section: any) => section.label)).toEqual(['Inputs', 'In/Outputs', 'Outputs'])
     expect(graph.props('edges')).toContainEqual(expect.objectContaining({
-      source: 'mapping_0-response', target: inoutputs[0].id, targetHandle: 'reply', label: 'updatedContext',
+      source: 'mapping_0-response', target: inoutputs[0].id, targetHandle: 'reply', label: 'response sink',
     }))
     expect(graph.props('edges')).toContainEqual(expect.objectContaining({
       source: inoutputs[0].id, sourceHandle: 'forward', target: 'mapping_0-request',
     }))
+    wrapper.unmount()
+  })
+
+  it('labels each edge with its role and draws what the response Lua reads besides its sources', async () => {
+    vi.stubGlobal('requestAnimationFrame', (callback: () => void) => {
+      callback()
+      return 0
+    })
+    const route = mapping()
+    route.sinks[0]!.resolved = { ...route.sinks[0]!.resolved!, direction: 'input' }
+    route.response = { ...route.response, code: `function aimc_main(sources, requestSources)
+      return { result = sources.result, Log = { Uuid = requestSources.command, Outcome = meta.invocation.outcome } }
+    end` }
+    const wrapper = shallowMount(AimcMappingGraph, { props: { mapping: route, direction: 'request' } })
+    await flushPromises()
+    const graph = wrapper.findComponent({ name: 'VueFlow' })
+    const edges = graph.props('edges')
+    const labelOf = (source: string, target: string): string | undefined =>
+      edges.find((edge: any) => edge.source === source && edge.target === target)?.label
+    expect(labelOf('mapping_0-source-0', 'mapping_0-request')).toBe('request source')
+    expect(labelOf('mapping_0-request', 'mapping_0-sink-0')).toBe('request sink')
+    expect(labelOf('mapping_0-response-source-0', 'mapping_0-response')).toBe('response source')
+
+    // requestSources.command: the request source feeds the response, entering from the left.
+    const context = edges.find((edge: any) => edge.source === 'mapping_0-source-0' && edge.target === 'mapping_0-response')
+    expect(context.label).toBe('requestSources')
+    const nodes = graph.props('nodes')
+    const response = nodes.find((node: any) => node.id === 'mapping_0-response')
+    expect(response.data.entrypoint).toBe('aimc_main(sources, requestSources)')
+    expect(response.data.handles.find((handle: any) => handle.id === context.targetHandle).position).toBe('left')
+
+    // meta.invocation.outcome: a meta node feeds the response only.
+    const meta = nodes.find((node: any) => node.id === 'mapping_0-meta')
+    expect(meta.data.member).toBe('invocation.outcome')
+    expect(labelOf('mapping_0-meta', 'mapping_0-response')).toBe('meta')
+    expect(labelOf('mapping_0-meta', 'mapping_0-request')).toBeUndefined()
+
+    // The node says what the endpoint addresses; the edge says its role.
+    const sink = nodes.find((node: any) => node.id === 'mapping_0-sink-0')
+    expect(sink.data.badges.map((badge: any) => badge.text)).toContain('action input')
     wrapper.unmount()
   })
 })
