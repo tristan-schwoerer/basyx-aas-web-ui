@@ -6,7 +6,7 @@ import AimcMappingGraph from './AimcMappingGraph.vue'
 
 const { updateNode } = vi.hoisted(() => ({ updateNode: vi.fn() }))
 vi.mock('@vue-flow/core', () => ({
-  Position: { Left: 'left', Right: 'right' },
+  Position: { Left: 'left', Right: 'right', Top: 'top', Bottom: 'bottom' },
   MarkerType: { ArrowClosed: 'arrowclosed' },
   Handle: { template: '<div />' },
   VueFlow: { name: 'VueFlow', props: ['nodes', 'edges'], template: '<div />' },
@@ -26,7 +26,7 @@ function mapping (): AimcMapping {
     kind: 'delegated-action',
     bidirectional: true,
     response: { ...route.response, present: true },
-    sources: [{ ...common, sourceId: 'command', kind: 'operation', triggers: true, resolved: { ...operation, selectedMember: 'command' } }],
+    sources: [{ ...common, sourceId: 'command', kind: 'operation', effectiveEvaluation: 'Operation', triggers: true, resolved: { ...operation, selectedMember: 'command' } }],
     sinks: [{ ...common, sinkId: 'command', kind: 'affordance', resolved: { ...action, selectedMember: 'input/command' } }],
     responseSources: [{ ...common, id: 'result', resolved: { ...action, selectedMember: 'output/result' } }],
     responseSinks: [{ ...common, id: 'result', resolved: { ...operation, selectedMember: 'result' } }],
@@ -128,6 +128,20 @@ describe('AIMC request/reply graph', () => {
     wrapper.unmount()
   })
 
+  it('draws no response half for an Operation that has none, such as an invoke-only action', async () => {
+    vi.stubGlobal('requestAnimationFrame', (callback: () => void) => {
+      callback()
+      return 0
+    })
+    const route = { ...mapping(), response: { ...mapping().response, present: false, code: '' }, responseSources: [], responseSinks: [] }
+    const wrapper = shallowMount(AimcMappingGraph, { props: { mapping: route, direction: 'request' } })
+    await flushPromises()
+    const graph = wrapper.findComponent({ name: 'VueFlow' })
+    expect(graph.props('nodes').some((node: any) => node.id === 'mapping_0-response')).toBe(false)
+    expect(graph.props('edges').some((edge: any) => edge.class?.includes('aimc-edge--reply'))).toBe(false)
+    wrapper.unmount()
+  })
+
   it('labels each edge with its role and draws what the response Lua reads besides its sources', async () => {
     vi.stubGlobal('requestAnimationFrame', (callback: () => void) => {
       callback()
@@ -148,19 +162,21 @@ describe('AIMC request/reply graph', () => {
     expect(labelOf('mapping_0-request', 'mapping_0-sink-0')).toBe('request sink')
     expect(labelOf('mapping_0-response-source-0', 'mapping_0-response')).toBe('response source')
 
-    // requestSources.command: the request source feeds the response, entering from the left.
-    const context = edges.find((edge: any) => edge.source === 'mapping_0-source-0' && edge.target === 'mapping_0-response')
-    expect(context.label).toBe('requestSources')
+    // requestSources.command: what the request Lua received feeds the response, from the
+    // Transformation's bottom edge into the ResponseTransformation's top edge.
+    const context = edges.find((edge: any) => edge.source === 'mapping_0-request' && edge.target === 'mapping_0-response')
+    expect(context.label).toBe('request sources')
     const nodes = graph.props('nodes')
+    const request = nodes.find((node: any) => node.id === 'mapping_0-request')
     const response = nodes.find((node: any) => node.id === 'mapping_0-response')
     expect(response.data.entrypoint).toBe('aimc_main(sources, requestSources)')
-    expect(response.data.handles.find((handle: any) => handle.id === context.targetHandle).position).toBe('left')
+    expect(request.data.handles.find((handle: any) => handle.id === context.sourceHandle).position).toBe('bottom')
+    expect(response.data.handles.find((handle: any) => handle.id === context.targetHandle).position).toBe('top')
 
-    // meta.invocation.outcome: a meta node feeds the response only.
-    const meta = nodes.find((node: any) => node.id === 'mapping_0-meta')
-    expect(meta.data.member).toBe('invocation.outcome')
-    expect(labelOf('mapping_0-meta', 'mapping_0-response')).toBe('meta')
-    expect(labelOf('mapping_0-meta', 'mapping_0-request')).toBeUndefined()
+    // meta.invocation.outcome: the DMP's global, listed on the transformation that reads it; no node.
+    expect(response.data.meta).toEqual(['invocation.outcome'])
+    expect(request.data.meta).toEqual([])
+    expect(nodes.some((node: any) => node.id.includes('meta'))).toBe(false)
 
     // The node says what the endpoint addresses; the edge says its role.
     const sink = nodes.find((node: any) => node.id === 'mapping_0-sink-0')

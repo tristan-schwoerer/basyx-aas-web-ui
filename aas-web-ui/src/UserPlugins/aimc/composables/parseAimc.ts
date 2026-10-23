@@ -8,6 +8,7 @@
  * from the IEC 61360 `class` preferred name where possible.
  */
 import type {
+  AimcEvaluationMode,
   AimcMapping,
   AimcMappingKind,
   AimcReferenceKey,
@@ -15,15 +16,15 @@ import type {
   AimcSource,
   AimcTransformation,
 } from '../types'
+import { AIMC_EVALUATION_MODES } from '../types'
 import {
-  AIMC_EXECUTION_SEMANTICS,
+  AIMC_EVALUATION,
   AIMC_RESPONSE_SINKS,
   AIMC_RESPONSE_SOURCES,
   AIMC_RESPONSE_TRANSFORMATION,
   AIMC_SINKS,
   AIMC_SOURCES,
   AIMC_TRANSFORMATION,
-  AIMC_TRIGGER_SOURCE_IDS,
 } from '../types/semanticIds'
 import { dmpMappingIdentity } from './dmpStatus'
 
@@ -148,8 +149,21 @@ function mappingName (mapping: any, index: number): string {
   return `mapping_${index}`
 }
 
+/** A Source's `Evaluation/Mode`: the authored mode, or a warning for one the DMP does not know. */
+function parseEvaluation (source: any): { mode?: AimcEvaluationMode, warning?: string } {
+  const evaluation = findByIdShortOrSemanticId(source, 'Evaluation', AIMC_EVALUATION)
+  if (evaluation === undefined) {
+    return {}
+  }
+  const mode = isPropertyValue(findByIdShortOrSemanticId(evaluation, 'Mode'))
+  return AIMC_EVALUATION_MODES.includes(mode as AimcEvaluationMode)
+    ? { mode: mode as AimcEvaluationMode }
+    : { warning: `Evaluation/Mode "${mode}" is not one of ${AIMC_EVALUATION_MODES.join(', ')}; the DMP rejects the mapping.` }
+}
+
 function parseSource (source: any): AimcSource {
   const keys = referenceKeys(findByIdShortOrSemanticId(source, 'Source'))
+  const evaluation = parseEvaluation(source).mode
   return {
     sourceId: isPropertyValue(findByIdShortOrSemanticId(source, 'SourceId')) || source?.idShort || '',
     keys,
@@ -158,7 +172,10 @@ function parseSource (source: any): AimcSource {
     protocol: protocolOf(keys),
     submodelId: keys[0]?.value ?? '',
     pollingInterval: isDouble(findByIdShortOrSemanticId(source, 'PollingInterval')),
-    triggers: true,
+    evaluation,
+    // Settled once the targets are resolved (an Operation, or an Operation mapping's further Sources).
+    effectiveEvaluation: evaluation ?? 'OnUpdate',
+    triggers: [undefined, 'OnUpdate', 'OnChange'].includes(evaluation),
   }
 }
 
@@ -205,13 +222,6 @@ function parseTransformation (
   }
 }
 
-/** Reads `ExecutionSemantics.TriggerSourceIds`; empty when the route does not declare it. */
-function parseTriggerSourceIds (mapping: any): string[] {
-  const semantics = findByIdShortOrSemanticId(mapping, 'ExecutionSemantics', AIMC_EXECUTION_SEMANTICS)
-  const list = findByIdShortOrSemanticId(semantics, 'TriggerSourceIds', AIMC_TRIGGER_SOURCE_IDS)
-  return children(list).map(element => isPropertyValue(element)).filter(value => value !== '')
-}
-
 /** Locates the MappingConfigurations list inside a submodel. */
 function findMappingConfigurations (submodel: any): any {
   const elements = Array.isArray(submodel?.submodelElements) ? submodel.submodelElements : []
@@ -233,23 +243,17 @@ function findMappingConfigurations (submodel: any): any {
 export function parseAimcRoute (mapping: any, index: number): AimcMapping {
   const sourcesList = findByIdShortOrSemanticId(mapping, 'Sources', AIMC_SOURCES)
   const sinksList = findByIdShortOrSemanticId(mapping, 'Sinks', AIMC_SINKS)
-  const triggerSourceIds = parseTriggerSourceIds(mapping)
   const sources = children(sourcesList).map(element => parseSource(element))
-  if (triggerSourceIds.length > 0) {
-    for (const source of sources) {
-      source.triggers = triggerSourceIds.includes(source.sourceId)
-    }
-  }
   const sinks = children(sinksList).map(element => parseSink(element))
   const request = parseTransformation(mapping, 'Transformation', AIMC_TRANSFORMATION, 'request')
   const response = parseTransformation(mapping, 'ResponseTransformation', AIMC_RESPONSE_TRANSFORMATION, 'response')
   const responseSources = parseResponseEndpoints(mapping, 'ResponseSources', AIMC_RESPONSE_SOURCES)
   const responseSinks = parseResponseEndpoints(mapping, 'ResponseSinks', AIMC_RESPONSE_SINKS)
   const kind: AimcMappingKind = 'data'
-  const knownSourceIds = new Set(sources.map(source => source.sourceId))
-  const warnings = triggerSourceIds
-    .filter(id => !knownSourceIds.has(id))
-    .map(id => `TriggerSourceIds names "${id}", which is not a SourceId of this route.`)
+  const warnings = children(sourcesList).flatMap(element => {
+    const warning = parseEvaluation(element).warning
+    return warning ? [warning] : []
+  })
 
   return {
     id: `mapping_${index}`,
@@ -260,7 +264,6 @@ export function parseAimcRoute (mapping: any, index: number): AimcMapping {
     sources,
     sinks,
     defaultPollingInterval: isDouble(findByIdShortOrSemanticId(mapping, 'DefaultPollingInterval')),
-    triggerSourceIds,
     request,
     response,
     responseSources,

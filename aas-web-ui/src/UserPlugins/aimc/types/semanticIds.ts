@@ -31,9 +31,8 @@ export const AIMC_RESPONSE_TRANSFORMATION = `${DMP_BASE}/ResponseTransformation/
 export const AIMC_RESPONSE_SOURCES = `${DMP_BASE}/ResponseSources/1/0`
 export const AIMC_RESPONSE_SINKS = `${DMP_BASE}/ResponseSinks/1/0`
 
-/** Which source updates execute an ordinary mapping. */
-export const AIMC_EXECUTION_SEMANTICS = `${DMP_BASE}/ExecutionSemantics/1/0`
-export const AIMC_TRIGGER_SOURCE_IDS = `${DMP_BASE}/ExecutionSemantics/TriggerSourceIds/1/0`
+/** A Source's Evaluation: whether it triggers its mapping and how its value is obtained. */
+export const AIMC_EVALUATION = `${DMP_BASE}/Evaluation/1/0`
 
 /**
  * Semantic IDs the plugin registers for: AIMC 2.x only, the version the DMP

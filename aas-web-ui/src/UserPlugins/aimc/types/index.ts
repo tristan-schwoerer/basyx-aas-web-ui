@@ -44,6 +44,10 @@ export interface AimcTransformation {
   element?: Record<string, unknown>
 }
 
+/** A Source's authored `Evaluation/Mode`. */
+export type AimcEvaluationMode = 'OnUpdate' | 'OnChange' | 'Cached' | 'ReadAtEvaluation'
+export const AIMC_EVALUATION_MODES: readonly AimcEvaluationMode[] = ['OnUpdate', 'OnChange', 'Cached', 'ReadAtEvaluation']
+
 /** A source (input) of a mapping. */
 export interface AimcSource {
   sourceId: string
@@ -59,11 +63,15 @@ export interface AimcSource {
   submodelId: string
   /** Per-source polling interval in seconds, if declared. */
   pollingInterval?: number
+  /** The authored `Evaluation/Mode`, if any. */
+  evaluation?: AimcEvaluationMode
   /**
-   * `false` when the route declares `ExecutionSemantics.TriggerSourceIds` and
-   * this source is not among them: its value is read, but its updates do not
-   * execute the mapping.
+   * The mode the DMP applies: the authored one, else `OnUpdate`; the further
+   * Sources of an Operation mapping are `ReadAtEvaluation`. `Operation` for the
+   * Operation itself, whose call is the mapping's only trigger.
    */
+  effectiveEvaluation: AimcEvaluationMode | 'Operation'
+  /** Whether a new value (or a call) evaluates the mapping. */
   triggers: boolean
   /** Semantic resolution of the physical AAS/AID target. */
   resolved?: AimcResolvedEndpoint
@@ -117,11 +125,6 @@ export interface AimcMapping {
   sinks: AimcSink[]
   /** Default polling interval of the MappingConfiguration, if declared. */
   defaultPollingInterval?: number
-  /**
-   * `ExecutionSemantics.TriggerSourceIds`: the SourceIds whose updates execute
-   * the mapping. Empty when not declared, in which case every source triggers.
-   */
-  triggerSourceIds: string[]
   request: AimcTransformation
   response: AimcTransformation
   responseSources: AimcResponseEndpoint[]

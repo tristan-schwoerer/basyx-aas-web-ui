@@ -1,4 +1,4 @@
-import type { AimcAffordanceGroup, AimcMapping, AimcReferenceKey, AimcResolvedEndpoint, AimcResponseEndpoint } from '../types'
+import type { AimcAffordanceGroup, AimcMapping, AimcReferenceKey, AimcResolvedEndpoint, AimcResponseEndpoint, AimcSource } from '../types'
 
 /**
  * Semantic ids of the AID `InteractionMetadata` group containers
@@ -209,12 +209,13 @@ export function resolveAimcMapping (mapping: AimcMapping, submodels: Map<string,
     ...endpoint,
     ...resolveResponse(endpoint, submodels),
   }))
-  const delegated = sources.some(source => source.resolved?.kind === 'operation')
-    && sinks.some(sink => sink.resolved?.kind === 'affordance')
+  const operationMapping = sources.some(source => source.resolved?.kind === 'operation')
+  for (const source of sources) {
+    source.effectiveEvaluation = effectiveEvaluation(source, operationMapping)
+    source.triggers = ['Operation', 'OnUpdate', 'OnChange'].includes(source.effectiveEvaluation)
+  }
+  const delegated = operationMapping && sinks.some(sink => sink.resolved?.kind === 'affordance')
   const kind = delegated ? 'delegated-action' : 'data'
-  const hasResponseElements = mapping.response.present
-    || mapping.responseSources.length > 0
-    || mapping.responseSinks.length > 0
   const warnings = [
     ...(mapping.warnings ?? []),
     ...(mapping.response.present && responseSinks.length === 0
@@ -222,8 +223,9 @@ export function resolveAimcMapping (mapping: AimcMapping, submodels: Map<string,
       : []),
     ...[...sources, ...sinks, ...responseSources, ...responseSinks]
       .flatMap(endpoint => endpoint.resolved?.warning ? [endpoint.resolved.warning] : []),
-    ...(hasResponseElements && !delegated
-      ? ['Response elements are only valid on an operation mapping (an AAS Operation source bound to an AID affordance); the DMP rejects them on a data mapping.']
+    ...evaluationWarnings(sources, operationMapping),
+    ...(operationMapping && !delegated
+      ? ['An Operation is answered only by a mapping that binds it to an AID action or property; the DMP rejects this mapping.']
       : []),
   ]
 
@@ -237,6 +239,36 @@ export function resolveAimcMapping (mapping: AimcMapping, submodels: Map<string,
     bidirectional: delegated || mapping.response.present,
     warnings,
   }
+}
+
+/**
+ * The mode the DMP applies to a Source (SPEC §6, §7.1): an Operation is its mapping's only trigger; an
+ * Operation mapping's further Sources are read at the call; any other Source is `OnUpdate` unless authored.
+ */
+function effectiveEvaluation (source: AimcSource, operationMapping: boolean): AimcSource['effectiveEvaluation'] {
+  if (source.resolved?.kind === 'operation') {
+    return 'Operation'
+  }
+  return source.evaluation ?? (operationMapping ? 'ReadAtEvaluation' : 'OnUpdate')
+}
+
+/** The mode combinations the DMP blocks, named as it names them. */
+function evaluationWarnings (sources: AimcSource[], operationMapping: boolean): string[] {
+  const warnings: string[] = []
+  for (const source of sources) {
+    if (source.resolved?.kind === 'operation' && source.evaluation) {
+      warnings.push(`Source "${source.sourceId}" is the Operation, its mapping's only trigger; it takes no Evaluation.`)
+    } else if (operationMapping && source.evaluation && source.evaluation !== 'ReadAtEvaluation') {
+      warnings.push(`Source "${source.sourceId}": an Operation mapping reads its further sources at the call (ReadAtEvaluation).`)
+    }
+    if (source.effectiveEvaluation === 'ReadAtEvaluation' && source.pollingInterval !== undefined && source.pollingInterval !== 0) {
+      warnings.push(`Source "${source.sourceId}" is read at evaluation and not polled; remove its PollingInterval.`)
+    }
+  }
+  if (sources.length > 0 && !sources.some(source => source.triggers)) {
+    warnings.push('No Source triggers this mapping; one needs the Evaluation OnUpdate (the default) or OnChange.')
+  }
+  return warnings
 }
 
 const affordanceGroups = ['properties', 'actions', 'events'] as const

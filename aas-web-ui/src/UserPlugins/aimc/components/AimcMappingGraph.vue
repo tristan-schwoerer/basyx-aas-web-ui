@@ -98,6 +98,11 @@
 
           <div class="aimc-node__path">{{ data.entrypoint }}</div>
 
+          <!-- The fields of Lua's global `meta` this transformation reads (SPEC §8). -->
+          <div v-if="data.meta.length > 0" class="aimc-node__path" :title="`reads the DMP's meta: ${data.meta.join(', ')}`">
+            meta: {{ data.meta.join(', ') }}
+          </div>
+
           <v-btn
             class="aimc-node__open"
             prepend-icon="mdi-code-tags"
@@ -137,7 +142,7 @@
    * correlated reply flows from the sink back through the response
    * transformation to the source. All connections are dashed and animated in
    * the direction of the data transfer; the forward lane additionally labels
-   * each source with its delivery mode (polled or pushed).
+   * each source with how its value arrives and whether it triggers the mapping.
    *
    * Nodes are placed in two passes: first with estimated heights, then — once
    * Vue Flow has measured them — with their rendered heights, so every column
@@ -209,10 +214,12 @@
   const MAX_GRAPH_HEIGHT = 760
   const GRAPH_MARGIN_Y = 140
 
-  // Every connection is a dashed spline whose dashes march along the flow.
+  // Every connection is a dashed spline whose dashes march along the flow. A
+  // bezier keeps edges between different points apart; right-angled edges
+  // between two columns would all bend on the same vertical line.
   const defaultEdgeOptions = {
     animated: true,
-    type: 'smoothstep',
+    type: 'default',
   }
 
   const nodes = ref<Node[]>([])
@@ -238,18 +245,11 @@
   }
 
   /**
-   * Delivery mode of a source, as authored on the route.
-   *
-   * The DMP has exactly two modes: a source is **polled** only when a positive
-   * `PollingInterval` is declared (on the source, or as the route's
-   * `DefaultPollingInterval`) — the sole case in which the DMP runs a timer
-   * route. Everything else is **pushed**: event affordances, properties
-   * declared `observable`, and anything a push protocol (MQTT) delivers on a
-   * topic all arrive on their own. An explicitly declared interval overrides
-   * the transport default, so a retained MQTT topic can still be sampled.
-   *
-   * The affordance group (`properties` / `actions` / `events`) is transport
-   * metadata shown as its own chip, not a third delivery mode.
+   * How a source's value arrives (SPEC §5.1, §6): **read at evaluation** for a
+   * `ReadAtEvaluation` source; **polled** at a positive `PollingInterval` (the
+   * source's, else the route's `DefaultPollingInterval`); otherwise **pushed**
+   * by the transport (an event, an observable property, a message topic).
+   * Whether the value also triggers the mapping is the separate mode badge.
    */
   function sourceDelivery (
     source: AimcMapping['sources'][number],
@@ -257,6 +257,9 @@
   ): { kind: string, text: string, color?: string } {
     if (source.resolved?.kind === 'operation') {
       return { kind: 'operation', text: '' }
+    }
+    if (source.effectiveEvaluation === 'ReadAtEvaluation') {
+      return { kind: 'read', text: 'read at evaluation', color: 'info' }
     }
     const pollingInterval = source.pollingInterval ?? defaultPollingInterval
     if (pollingInterval !== undefined && pollingInterval > 0) {
@@ -310,14 +313,28 @@
     if (delivery.text) {
       badges.push({ text: delivery.text, color: delivery.color })
     }
-    // Only meaningful when the route narrows its triggers.
-    if (mapping.triggerSourceIds.length > 0) {
-      badges.push(source.triggers ? { text: 'trigger', color: 'primary' } : { text: 'no trigger' })
+    const mode = evaluationBadge(source.effectiveEvaluation)
+    if (mode) {
+      badges.push(mode)
     }
     if (source.kind === 'unknown') {
       badges.push({ text: 'unresolved', color: 'warning' })
     }
     return badges
+  }
+
+  /**
+   * Whether the source evaluates the mapping (SPEC §6): on every update, only on a change, on the
+   * Operation's call, or never (cached). A source read at evaluation says so in its delivery badge.
+   */
+  function evaluationBadge (evaluation: AimcMapping['sources'][number]['effectiveEvaluation']): { text: string, color?: string } | undefined {
+    switch (evaluation) {
+      case 'Operation': { return { text: 'on call', color: 'primary' } }
+      case 'OnUpdate': { return { text: 'on update', color: 'primary' } }
+      case 'OnChange': { return { text: 'on change', color: 'primary' } }
+      case 'Cached': { return { text: 'cached' } }
+      default: { return undefined }
+    }
   }
 
   function sinkBadges (sink: AimcMapping['sinks'][number]): Array<{ text: string, color?: string }> {
@@ -372,7 +389,7 @@
     id: string
     type: 'source' | 'target'
     position: Position
-    /** CSS `top`; set once the nodes are placed. */
+    /** CSS `top` on the left and right edges, set once the nodes are placed; empty on the top and bottom edges. */
     top: string
     /** The endpoint at the edge's other end, and its handle there. */
     peer: string
@@ -400,13 +417,11 @@
     const requestNodeId = `${mapping.id}-request`
     const responseNodeId = `${mapping.id}-response`
     const hasExplicitReply = mapping.response.present || mapping.responseSources.length > 0 || mapping.responseSinks.length > 0
-    const isOperation = mapping.kind === 'delegated-action'
     const operationIndex = mapping.sources.findIndex(source => source.resolved?.kind === 'operation')
-    // An operation always answers its caller. Without a ResponseTransformation
-    // the reply passes through unchanged; it is still drawn through its own
-    // (passthrough) node, so it keeps to the reply lane instead of cutting
-    // under the request transformation.
-    const hasResponseNode = mapping.response.present || hasExplicitReply || (isOperation && operationIndex !== -1)
+    // Only an authored response half is drawn. Without one an Operation answers
+    // its caller with no outputs once the action finished (SPEC §7 step 5):
+    // nothing flows back but the acknowledgement.
+    const hasResponseNode = hasExplicitReply
 
     const sourceColumn: AimcLayoutItem[] = []
     const sinkColumn: AimcLayoutItem[] = []
@@ -482,21 +497,12 @@
         target: requestNodeId,
         sourceHandle: 'forward',
         targetHandle: null,
-        // A source outside the trigger selection is read, but does not run the mapping.
+        // Only a triggering source runs the mapping; a cached or read-at-evaluation one is only read.
         animated: source.triggers,
         label: 'request source',
         class: 'aimc-edge',
         markerEnd: MarkerType.ArrowClosed,
       })
-      if (hasResponseNode && !hasExplicitReply && (!isOperation || index === operationIndex)) {
-        replyEdge(`${responseNodeId}-to-${id}`, {
-          source: responseNodeId,
-          target: id,
-          sourceHandle: null,
-          targetHandle: 'reply',
-          label: 'reply',
-        })
-      }
     }
 
     for (const [index, sink] of mapping.sinks.entries()) {
@@ -524,16 +530,6 @@
         class: 'aimc-edge',
         markerEnd: MarkerType.ArrowClosed,
       })
-      const answersCaller = isOperation && sink.kind === 'affordance'
-      if (hasResponseNode && !hasExplicitReply && (!isOperation || answersCaller)) {
-        replyEdge(`${id}-to-response`, {
-          source: id,
-          target: responseNodeId,
-          sourceHandle: 'reply',
-          targetHandle: null,
-          label: 'reply',
-        })
-      }
     }
 
     if (hasExplicitReply) {
@@ -547,7 +543,7 @@
           kind: endpoint.resolved?.kind ?? 'unknown',
           deliveryKind: 'response',
           badges: targetBadges(endpoint),
-          member: endpoint.resolved?.selectedMember ?? endpoint.refPath,
+          member: endpoint.resolved?.selectedMember,
           keys: endpoint.keys,
           problems: problemsAt('ResponseSources', index),
           handles: ['reply'],
@@ -591,7 +587,7 @@
           kind: endpoint.resolved?.kind ?? 'unknown',
           deliveryKind: 'response',
           badges: targetBadges(endpoint),
-          member: endpoint.resolved?.selectedMember ?? endpoint.resolved?.operationPath ?? endpoint.refPath,
+          member: endpoint.resolved?.selectedMember,
           keys: endpoint.keys,
           problems: problemsAt('ResponseSinks', index),
           handles: ['reply'],
@@ -600,57 +596,24 @@
       }
     }
 
-    // What the transformations read besides their sources: the request sources
-    // a ResponseTransformation takes as its second parameter, and the DMP's
-    // `meta` table. Both are read, not written, so they are drawn as context.
-    const contextEdge = (id: string, source: string, target: string, label: string): void => {
-      nextEdges.push({
-        id,
-        source,
-        target,
-        sourceHandle: 'forward',
-        targetHandle: null,
-        label,
-        class: 'aimc-edge aimc-edge--context',
-        markerEnd: MarkerType.ArrowClosed,
-        // Context comes from the left, also into the (mirrored) response lane.
-        data: { entersLeft: true },
-      } as Edge)
-    }
+    // The response Lua also gets what the request Lua received: one edge from
+    // the Transformation's bottom edge into the ResponseTransformation's top
+    // edge, drawn as context (read, not written). Lua's global `meta` is the
+    // DMP's, not an input, so it is listed on each transformation instead.
     if (hasResponseNode && mapping.response.present) {
       const usage = requestSourceUsage(mapping.response.code)
-      for (const [index, source] of mapping.sources.entries()) {
-        if (usage.kind === 'all' || (usage.kind === 'some' && usage.ids.includes(source.sourceId))) {
-          contextEdge(`${mapping.id}-source-${index}-to-response`, `${mapping.id}-source-${index}`, responseNodeId, 'requestSources')
-        }
-      }
-    }
-    const requestMeta = metaUsage(mapping.request.code)
-    const responseMeta = hasResponseNode ? metaUsage(mapping.response.code) : []
-    if (requestMeta.length > 0 || responseMeta.length > 0) {
-      const id = `${mapping.id}-meta`
-      if (requestMeta.length > 0) {
-        sourceColumn.unshift({ id })
-      } else {
-        replyLeft.push({ id })
-      }
-      pushNode(id, 'aimcSource', SOURCE_X, {
-        nodeId: id,
-        role: 'source',
-        label: 'meta',
-        kind: 'unknown',
-        deliveryKind: 'meta',
-        icon: 'mdi-information-outline',
-        badges: [{ text: 'DMP' }],
-        member: [...new Set([...requestMeta, ...responseMeta])].join(', '),
-        keys: [],
-        handles: [],
-      } satisfies AimcEndpointNodeData)
-      if (requestMeta.length > 0) {
-        contextEdge(`${id}-to-request`, id, requestNodeId, 'meta')
-      }
-      if (responseMeta.length > 0) {
-        contextEdge(`${id}-to-response`, id, responseNodeId, 'meta')
+      if (usage.kind !== 'none') {
+        nextEdges.push({
+          id: `${requestNodeId}-to-response-request-sources`,
+          source: requestNodeId,
+          target: responseNodeId,
+          sourceHandle: null,
+          targetHandle: null,
+          label: 'request sources',
+          class: 'aimc-edge aimc-edge--context',
+          markerEnd: MarkerType.ArrowClosed,
+          data: { vertical: true },
+        } as Edge)
       }
     }
 
@@ -677,6 +640,7 @@
       entrypoint: entrypointOf(mapping.request.code),
       absent: !mapping.request.present || mapping.request.code === '',
       lines: lineCount(mapping.request.code),
+      meta: metaUsage(mapping.request.code),
     })
     if (hasResponseNode) {
       pushNode(responseNodeId, 'aimcTransform', TRANSFORM_X, {
@@ -686,6 +650,7 @@
         entrypoint: entrypointOf(mapping.response.code),
         absent: !mapping.response.present || mapping.response.code === '',
         lines: lineCount(mapping.response.code),
+        meta: metaUsage(mapping.response.code),
       })
     }
 
@@ -741,8 +706,10 @@
         entering.push({
           id,
           type: 'target',
-          position: edge.target === requestNodeId || edge.data?.entersLeft ? Position.Left : Position.Right,
-          top: '50%',
+          position: edge.data?.vertical
+            ? Position.Top
+            : (edge.target === requestNodeId ? Position.Left : Position.Right),
+          top: edge.data?.vertical ? '' : '50%',
           peer: edge.source,
           peerHandle: edge.sourceHandle,
         })
@@ -754,8 +721,10 @@
         leaving.push({
           id,
           type: 'source',
-          position: edge.source === requestNodeId ? Position.Right : Position.Left,
-          top: '50%',
+          position: edge.data?.vertical
+            ? Position.Bottom
+            : (edge.source === requestNodeId ? Position.Right : Position.Left),
+          top: edge.data?.vertical ? '' : '50%',
           peer: edge.target,
           peerHandle: edge.targetHandle,
         })
@@ -796,7 +765,8 @@
         }
       }
       updateNode(node.id, {
-        data: { ...node.data, handles: handles.map(handle => ({ ...handle, top: placed.get(handle.id) ?? '50%' })) },
+        // A handle on the top or bottom edge stays centered there.
+        data: { ...node.data, handles: handles.map(handle => ({ ...handle, top: placed.get(handle.id) ?? handle.top })) },
       })
     }
   }

@@ -134,39 +134,18 @@
           @select-direction="selectDirection"
         />
 
-        <!-- Delivery legend. The DMP has only two modes: a positive
-             PollingInterval makes the DMP sample the source on a timer,
-             everything else arrives pushed by the transport. -->
+        <!-- Edge legend. -->
         <div class="d-flex flex-wrap align-center ga-4 mb-4 text-body-small">
-          <span class="font-weight-bold">Delivery</span>
-
-          <v-tooltip location="top" text="A positive PollingInterval is declared — the DMP samples the source on a timer.">
-            <template #activator="{ props: tooltipProps }">
-              <span v-bind="tooltipProps" class="d-inline-flex align-center ga-2">
-                <span class="aimc-swatch aimc-swatch--polling" /> polled every n s
-              </span>
-            </template>
-          </v-tooltip>
-
-          <v-tooltip
-            location="top"
-            text="No polling interval — the value is pushed by the transport: an event affordance, an observable property, or a message topic."
-          >
-            <template #activator="{ props: tooltipProps }">
-              <span v-bind="tooltipProps" class="d-inline-flex align-center ga-2">
-                <span class="aimc-swatch aimc-swatch--pushed" /> pushed
-              </span>
-            </template>
-          </v-tooltip>
-
-          <v-divider class="my-1" vertical />
-
           <span class="d-inline-flex align-center ga-2">
             <span class="aimc-dash aimc-dash--forward" /> request / data flow
           </span>
 
-          <span v-if="focusedRoute.bidirectional" class="d-inline-flex align-center ga-2">
+          <span v-if="focusedRoute.response.present || focusedRoute.responseSinks.length > 0" class="d-inline-flex align-center ga-2">
             <span class="aimc-dash aimc-dash--reply" /> correlated reply
+          </span>
+
+          <span class="d-inline-flex align-center ga-2">
+            <span class="aimc-dash aimc-dash--context" /> request sources passed to the response
           </span>
 
           <v-divider class="my-1" vertical />
@@ -509,23 +488,6 @@
 </script>
 
 <style scoped>
-  .aimc-swatch {
-    display: inline-block;
-    width: 14px;
-    height: 14px;
-    border-radius: 4px;
-    border: 1px solid rgba(128, 128, 128, 0.5);
-    background: rgb(var(--v-theme-surface));
-  }
-
-  .aimc-swatch--polling {
-    border-left: 3px solid rgb(var(--v-theme-info));
-  }
-
-  .aimc-swatch--pushed {
-    border-left: 3px solid rgb(var(--v-theme-success));
-  }
-
   .aimc-dash {
     display: inline-block;
     width: 26px;
@@ -536,5 +498,11 @@
   .aimc-dash--reply {
     border-top-style: dotted;
     opacity: 0.7;
+  }
+
+  .aimc-dash--context {
+    border-top-style: dotted;
+    border-top-width: 1px;
+    opacity: 0.8;
   }
 </style>

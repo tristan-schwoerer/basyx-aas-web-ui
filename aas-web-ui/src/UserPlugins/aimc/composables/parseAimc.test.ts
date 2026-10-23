@@ -104,32 +104,44 @@ describe('parseAimc without fixtures', () => {
       .toContain('No MappingConfigurations')
   })
 
-  it('reads ExecutionSemantics.TriggerSourceIds and flags unknown ids', () => {
-    const route = parseAimcRoute({
+  it('reads each Source\'s Evaluation/Mode and flags an unknown one', () => {
+    const evaluated = (id: string, mode?: string) => ({
       modelType: 'SubmodelElementCollection',
       value: [
-        {
-          idShort: 'Sources',
-          modelType: 'SubmodelElementList',
-          value: ['A', 'B'].map(id => ({
-            modelType: 'SubmodelElementCollection',
-            value: [{ idShort: 'SourceId', modelType: 'Property', value: id }],
-          })),
-        },
-        {
-          idShort: 'ExecutionSemantics',
-          modelType: 'SubmodelElementCollection',
-          value: [{
-            idShort: 'TriggerSourceIds',
-            modelType: 'SubmodelElementList',
-            value: ['A', 'C'].map(id => ({ modelType: 'Property', value: id })),
-          }],
-        },
+        { idShort: 'SourceId', modelType: 'Property', value: id },
+        ...(mode === undefined
+          ? []
+          : [{ idShort: 'Evaluation', modelType: 'SubmodelElementCollection', value: [{ idShort: 'Mode', modelType: 'Property', value: mode }] }]),
       ],
+    })
+    const route = parseAimcRoute({
+      modelType: 'SubmodelElementCollection',
+      value: [{
+        idShort: 'Sources',
+        modelType: 'SubmodelElementList',
+        value: [evaluated('A'), evaluated('B', 'OnChange'), evaluated('C', 'Cached'), evaluated('D', 'ReadAtEvaluation'), evaluated('E', 'Sometimes')],
+      }],
     }, 0)
-    expect(route.triggerSourceIds).toEqual(['A', 'C'])
-    expect(route.sources.map(source => source.triggers)).toEqual([true, false])
-    expect(route.warnings).toEqual(['TriggerSourceIds names "C", which is not a SourceId of this route.'])
+    expect(route.sources.map(source => source.evaluation)).toEqual([undefined, 'OnChange', 'Cached', 'ReadAtEvaluation', undefined])
+    expect(route.sources.map(source => source.effectiveEvaluation)).toEqual(['OnUpdate', 'OnChange', 'Cached', 'ReadAtEvaluation', 'OnUpdate'])
+    expect(route.sources.map(source => source.triggers)).toEqual([true, true, false, false, true])
+    expect(route.warnings).toEqual([expect.stringContaining('Evaluation/Mode "Sometimes"')])
+  })
+
+  it('warns about a mapping no Source triggers', () => {
+    const cached = parseAimcRoute({
+      modelType: 'SubmodelElementCollection',
+      value: [{
+        idShort: 'Sources',
+        modelType: 'SubmodelElementList',
+        value: [{ modelType: 'SubmodelElementCollection', value: [
+          { idShort: 'SourceId', modelType: 'Property', value: 'A' },
+          { idShort: 'Evaluation', modelType: 'SubmodelElementCollection', value: [{ idShort: 'Mode', modelType: 'Property', value: 'Cached' }] },
+        ] }],
+      }],
+    }, 0)
+    expect(resolveAimcMapping(cached, new Map()).warnings).toContain(
+      'No Source triggers this mapping; one needs the Evaluation OnUpdate (the default) or OnChange.')
   })
 
   it('warns about routes sharing an idShort, which the DMP rejects', () => {
@@ -154,7 +166,7 @@ describe('parseAimc without fixtures', () => {
         value: [{ modelType: 'SubmodelElementCollection', value: [{ idShort: 'SourceId', modelType: 'Property', value: 'A' }] }],
       }],
     }, 0)
-    expect(route.triggerSourceIds).toEqual([])
+    expect(route.sources[0]!.effectiveEvaluation).toBe('OnUpdate')
     expect(route.sources[0]!.triggers).toBe(true)
   })
 })
@@ -180,7 +192,7 @@ describeFixtures('plain IDTA AIMC templates, without the DMP extensions', () => 
     expect(route!.defaultPollingInterval).toBe(1)
     // None of the DMP extensions are present, and none are required.
     expect(route!.response.present).toBe(false)
-    expect(route!.triggerSourceIds).toEqual([])
+    expect(route!.sources[0]!.evaluation).toBeUndefined()
     expect(route!.bidirectional).toBe(false)
 
     // The template's example references are empty: reported, not thrown.
@@ -372,18 +384,18 @@ describeFixtures('DMP extensions (projection-extensions)', () => {
     expect(route!.bidirectional).toBe(true)
   })
 
-  it('reads the trigger selection', () => {
-    expect(route!.triggerSourceIds).toEqual(['invoke'])
-    expect(route!.sources[0]!.triggers).toBe(true)
+  it('makes the Operation its mapping\'s only trigger', () => {
+    const resolved = resolveAimcMapping(route!, submodels)
+    expect(resolved.sources[0]!.effectiveEvaluation).toBe('Operation')
+    expect(resolved.sources[0]!.triggers).toBe(true)
   })
 
-  it('warns that response elements are not valid on a route that is not an operation mapping', () => {
-    // The Operation sinks into an AAS Property, which the DMP does not compile as a bridge.
+  it('warns that an Operation bound to an AAS Property is no mapping the DMP compiles', () => {
     const resolved = resolveAimcMapping(route!, submodels)
     expect(resolved.kind).toBe('data')
     expect(resolved.warnings).toEqual([
       expect.stringContaining('requires explicit ResponseSinks'),
-      expect.stringContaining('only valid on an operation mapping'),
+      expect.stringContaining('binds it to an AID action or property'),
     ])
   })
 })
