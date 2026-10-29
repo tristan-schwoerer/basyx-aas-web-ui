@@ -114,7 +114,7 @@ export interface AimcResponseEndpoint {
 export interface AimcMapping {
   /** Stable id for graph nodes: `mapping_<index>`. */
   id: string
-  /** Authored name, recovered from IEC 61360 metadata or `idShort`. */
+  /** Authored name: the display name of the list item, or its `idShort`. */
   name: string
   /** Index within the MappingConfigurations list. */
   index: number
