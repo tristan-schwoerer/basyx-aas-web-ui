@@ -3,9 +3,8 @@
  * into the flat mapping model the visualization renders.
  *
  * The mapping is intentionally tolerant: the wire format is produced by several
- * tools and the `MappingConfiguration` collection loses its `idShort` when it is
- * serialised as a `SubmodelElementList` item, so the authored name is recovered
- * from the IEC 61360 `class` preferred name where possible.
+ * tools and the `MappingConfiguration` collection has no `idShort` as a
+ * `SubmodelElementList` item (AASd-120), so its name is its `displayName`.
  */
 import type {
   AimcEvaluationMode,
@@ -124,23 +123,12 @@ function referencePath (keys: AimcReferenceKey[]): string {
   return keys.map(key => key.value).join('/')
 }
 
-/** Recovers the authored MappingConfiguration name from IEC 61360 metadata. */
+/** The MappingConfiguration's name: a list item has no idShort (AASd-120), so it is shown by its display name. */
 function mappingName (mapping: any, index: number): string {
-  const specs = Array.isArray(mapping?.embeddedDataSpecifications) ? mapping.embeddedDataSpecifications : []
-  for (const spec of specs) {
-    const content = spec?.dataSpecificationContent
-    if (content?.modelType !== 'DataSpecificationIec61360') {
-      continue
-    }
-    const preferredNames = Array.isArray(content.preferredName) ? content.preferredName : []
-    const isClass = preferredNames.some((entry: any) => entry?.text === 'class')
-    if (!isClass) {
-      continue
-    }
-    const keyValue = spec?.dataSpecification?.keys?.[0]?.value
-    if (typeof keyValue === 'string' && keyValue !== '' && !PLACEHOLDER_NAMES.has(keyValue)) {
-      return keyValue
-    }
+  const displayNames = Array.isArray(mapping?.displayName) ? mapping.displayName : []
+  const displayName = (displayNames.find((entry: any) => entry?.language === 'en') ?? displayNames[0])?.text
+  if (typeof displayName === 'string' && displayName !== '') {
+    return displayName
   }
   const idShort = mapping?.idShort
   if (typeof idShort === 'string' && idShort !== '' && !PLACEHOLDER_NAMES.has(idShort)) {

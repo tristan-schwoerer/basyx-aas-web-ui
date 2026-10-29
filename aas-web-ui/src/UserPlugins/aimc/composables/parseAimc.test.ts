@@ -211,13 +211,12 @@ describeFixtures('parseAimc (stoppering)', () => {
 
   it('finds the MappingConfigurations list despite its 1/0 semantic id', () => {
     expect(result.warnings).toEqual([])
-    expect(result.mappings).toHaveLength(6)
+    expect(result.mappings).toHaveLength(5)
   })
 
-  it('recovers the authored route name from the IEC 61360 class metadata', () => {
+  it('names each route by its display name', () => {
     expect(result.mappings.map(mapping => mapping.name)).toEqual([
-      'MQTT',
-      'MQTTHistory',
+      'StationState',
       'Halt',
       'Occupy',
       'Release',
@@ -242,9 +241,9 @@ describeFixtures('parseAimcRoute (stoppering)', () => {
 
   it('parses a single route on its own, without the surrounding submodel', () => {
     const mqtt = parseAimcRoute(items[0], 0)
-    expect(mqtt.name).toBe('MQTT')
+    expect(mqtt.name).toBe('StationState')
     expect(mqtt.sources.map(source => source.sourceId)).toEqual(['StationState'])
-    expect(mqtt.sinks.map(sink => sink.sinkId)).toEqual(['PackMLState', 'OccupationState'])
+    expect(mqtt.sinks.map(sink => sink.sinkId)).toEqual(['Live'])
   })
 
   it('decodes the request transformation blob into Lua', () => {
@@ -312,11 +311,11 @@ describeFixtures('semantic AID reference resolution (stoppering)', () => {
     expect(halt.warnings).toEqual([])
   })
 
-  it('resolves a data route to its property source and AAS element sinks', () => {
+  it('resolves a data route to its property source and the state series it writes', () => {
     const mqtt = resolveAimcMapping(parseAimcRoute(items[0], 0), submodels)
     expect(mqtt.kind).toBe('data')
     expect(mqtt.sources[0]!.group).toBe('properties')
-    expect(mqtt.sinks.map(sink => sink.kind)).toEqual(['aas-element', 'aas-element'])
+    expect(mqtt.sinks.map(sink => sink.kind)).toEqual(['aas-element'])
     expect(mqtt.warnings).toEqual([])
   })
 })
@@ -332,7 +331,7 @@ describeFixtures('OPC UA only station (imaDispensing)', () => {
     const state = routes[0]!
     expect(state.sources.map(source => source.sourceId)).toEqual(['State', 'ProcessQueue'])
     expect(state.sources.every(source => source.protocol === 'opcua')).toBe(true)
-    expect(state.sinks.map(sink => sink.sinkId)).toEqual(['PackMLState', 'OccupationState'])
+    expect(state.sinks.map(sink => sink.sinkId)).toEqual(['Live'])
   })
 
   it('resolves every route without warnings', () => {
@@ -345,14 +344,14 @@ describeFixtures('OPC UA only station (imaDispensing)', () => {
     expect(state.kind).toBe('affordance')
     expect(state.group).toBe('properties')
     expect(state.origin).toBe('AssetInterfacesDescription · interface_opcua')
-    // Read by the route keeping the AAS Properties current and by the state history.
-    expect(state.readers.map(use => use.endpointId)).toEqual(['State', 'State'])
+    // Read by the route writing the state series.
+    expect(state.readers.map(use => use.endpointId)).toEqual(['State'])
     expect(state.writers).toEqual([])
 
-    const packml = index.find(entry => entry.label === 'PackMLState')!
-    expect(packml.kind).toBe('aas-element')
-    expect(packml.origin).toBe('Variables')
-    expect(packml.writers.map(use => use.routeName)).toEqual([routes[0]!.name])
+    const series = index.find(entry => entry.kind === 'aas-element' && entry.writers.some(
+      use => use.routeName === routes[0]!.name))!
+    expect(series.label).toBe('State/Station/Segments/Live')
+    expect(series.origin).toBe('Variables')
 
     // An action is written by its operation route.
     const halt = index.find(entry => entry.group === 'actions' && entry.label === 'Halt')!
